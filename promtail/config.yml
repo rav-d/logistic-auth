@@ -1,0 +1,50 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://internal-tir-loki-dev-lb-491379303.eu-central-1.elb.amazonaws.com:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: auth-components
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: auth
+          service: auth
+          environment: development
+          __path__: /var/log/tir/auth-*.log
+    
+    pipeline_stages:
+      # Extract component from filename
+      - regex:
+          expression: 'auth-(?P<component>[^.]+)\.log'
+          source: filename
+      
+      # Add component as label
+      - labels:
+          component:
+      
+      # Parse JSON log content
+      - json:
+          expressions:
+            timestamp: timestamp
+            level: level
+            message: message
+            correlationId: correlationId
+            userId: userId
+            service: service
+            serviceVersion: serviceVersion
+      
+      # Add level as label
+      - labels:
+          level:
+      
+      # Set timestamp from log content
+      - timestamp:
+          source: timestamp
+          format: RFC3339

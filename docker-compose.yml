@@ -1,0 +1,134 @@
+# TIR Browser Platform - auth Service Docker Compose
+# For local development and testing
+
+version: '3.8'
+
+services:
+  auth:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: tir-auth
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    volumes:
+      # Shared log volume with Promtail
+      - log-volume:/var/log/tir
+      # Mount source code for development (comment out for production)
+      - ./src:/app/src
+    networks:
+      - tir-network
+    depends_on:
+      - loki
+      - grafana
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  promtail:
+    image: grafana/promtail:3.2.0
+    container_name: tir-promtail
+    volumes:
+      # Shared log volume with auth (read-only)
+      - log-volume:/var/log/tir:ro
+      # Mount Promtail configuration (local version)
+      - ./promtail/config-local.yml:/etc/promtail/config.yml:ro
+    networks:
+      - tir-network
+    depends_on:
+      - auth
+      - loki
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/config.yml
+
+ 
+  # VPN connectivity test service with OpenVPN
+  vpn-test:
+    image: alpine:latest
+    container_name: tir-vpn-test
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    environment:
+      - LOKI_REMOTE_URL=http://internal-tir-loki-dev-lb-491379303.eu-central-1.elb.amazonaws.com:3100
+    volumes:
+      # Mount the specific VPN config file from developer-certs
+      - ./developer-certs/client-template.ovpn:/etc/openvpn/client.ovpn:ro
+    command: >
+      sh -c "
+        echo 'Installing OpenVPN and curl...';
+        apk add --no-cache openvpn curl;
+        echo 'Verifying VPN config file...';
+        ls -la /etc/openvpn/client.ovpn;
+        echo 'Starting OpenVPN with developer-certs/client-template.ovpn...';
+        openvpn --config /etc/openvpn/client.ovpn --daemon --log /var/log/openvpn.log --verb 3;
+        echo 'Waiting for VPN connection to establish...';
+        sleep 15;
+        echo 'Checking OpenVPN process...';
+        ps aux | grep openvpn || echo 'OpenVPN not running';
+        echo 'Checking VPN log...';
+        tail -20 /var/log/openvpn.log || echo 'No VPN log found';
+        while true; do
+          echo 'Testing VPN connectivity to remote Loki via client-template.ovpn connection...';
+          if curl -f --connect-timeout 10 $$LOKI_REMOTE_URL/ready; then
+            echo '✅ VPN connection successful - Remote Loki accessible via client-template.ovpn';
+          else
+            echo '❌ VPN connection failed - Remote Loki unavailable (check client-template.ovpn)';
+            tail -5 /var/log/openvpn.log || echo 'No recent VPN logs';
+          fi;
+          sleep 30;
+        done
+      "
+    networks:
+      - tir-network
+    restart: unless-stopped
+
+  # Local Loki for development (fallback when VPN not available)
+  loki:
+    image: grafana/loki:2.9.0
+    container_name: tir-loki-local
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - loki-data:/loki
+    networks:
+      - tir-network
+    restart: unless-stopped
+
+  # Local Grafana for log visualization
+  grafana:
+    image: grafana/grafana:10.0.0
+    container_name: tir-grafana-local
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    networks:
+      - tir-network
+    restart: unless-stopped
+
+volumes:
+  loki-data:
+    driver: local
+  grafana-data:
+    driver: local
+  log-volume:
+    driver: local
+
+networks:
+  tir-network:
+    driver: bridge
+    name: tir-browser-network

@@ -1,0 +1,32 @@
+{
+  "name": "tir-browser-auth-cdk",
+  "version": "1.0.0",
+  "description": "CDK infrastructure for TIR Browser auth service",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "deploy": "cdk deploy --require-approval never",
+    "deploy:dev": "NODE_ENV=development cdk deploy --require-approval never",
+    "deploy:prod": "NODE_ENV=production cdk deploy --require-approval never",
+    "destroy": "cdk destroy --force",
+    "diff": "cdk diff",
+    "synth": "cdk synth"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.206.0",
+    "constructs": "^10.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.16.4",
+    "aws-cdk": "^2.204.0",
+    "typescript": "^5.8.3"
+  },
+  "keywords": [
+    "aws",
+    "cdk",
+    "tir-browser",
+    "auth"
+  ],
+  "author": "TIR Browser Development Team",
+  "license": "Private"
+}
