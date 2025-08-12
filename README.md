@@ -12,6 +12,26 @@
 
 **Your task**: Implement authentication business logic using the existing infrastructure patterns.
 
+## 🔐 AWS Cognito Integration
+**Leverage existing Cognito setup for core authentication, implement custom business logic:**
+
+**✅ Cognito Handles:**
+- User registration (email/password) with validation
+- Email verification and token management
+- Password security (hashing, complexity, reset flows)
+- JWT token lifecycle (generation, validation, refresh)
+- Session management and token expiration
+- Account security (lockouts, suspicious activity)
+- OAuth integration (if needed)
+
+**🔧 Custom Implementation Required:**
+- Polymorphic user profiles (Provider/Driver/Internal types)
+- RBAC system (roles, permissions, resource access)
+- Company-driver relationships and business associations
+- User management APIs (admin CRUD operations)
+- Audit logging for business events and compliance
+- Custom user attributes (licenses, company data, internal roles)
+
 ---
 
 Core authentication and authorization microservice for the TIR Browser logistics platform. Handles user management for three distinct user types: Providers (goods owners), Drivers (TIR drivers), and Internal Admin users with comprehensive RBAC system.
@@ -205,21 +225,65 @@ docker-compose up
 - **Password Security**: Bcrypt hashing, complexity requirements, breach detection
 - **Account Security**: Lockout policies, suspicious activity detection, device tracking
 
-### Database Schema Requirements
-**Primary Storage: DynamoDB** - All data must be stored in DynamoDB using single-table design patterns. PostgreSQL may only be used if specific requirements cannot be met with DynamoDB (complex transactions, advanced querying needs).
+### ID Generation Strategy
+**Human-readable IDs for documents and business operations:**
 
-**DynamoDB Table Design:**
-- `users` - Core user data with polymorphic type field
-- `user_profiles` - Type-specific profile data (JSON/JSONB)
-- `companies` - Company information for providers
-- `company_drivers` - Many-to-many relationship between companies and drivers
-- `roles` - Role definitions and hierarchies
-- `permissions` - Granular permission definitions
-- `user_roles` - User-role assignments with context
-- `user_sessions` - Active session tracking
-- `audit_logs` - Authentication and authorization events
-- `password_resets` - Secure reset token management
-- `email_verifications` - Email verification workflows
+**ID Formats:**
+- **`user_id`**: `U-{timestamp}-{random}` (e.g., `U-1705312200-k2j8h9x3q`)
+- **`driver_id`**: `D-{country}-{YYMMDD}-{random}` (e.g., `D-AZ-240115-X7Y8Z9`)
+- **`provider_id`**: `P-{country}-{YYMMDD}-{random}` (e.g., `P-TR-240115-M2N5P8`)
+
+**Generation Logic:**
+```javascript
+function generateUserId() {
+    const timestamp = Date.now();
+    const random = Math.random().toString(36).substr(2, 9);
+    return `U-${timestamp}-${random}`;
+}
+
+function generateDriverId(country) {
+    const date = new Date().toISOString().slice(2,10).replace(/-/g,''); // YYMMDD
+    const random = Math.random().toString(36).substr(2, 6).toUpperCase();
+    return `D-${country}-${date}-${random}`;
+}
+
+function generateProviderId(country) {
+    const date = new Date().toISOString().slice(2,10).replace(/-/g,''); // YYMMDD
+    const random = Math.random().toString(36).substr(2, 6).toUpperCase();
+    return `P-${country}-${date}-${random}`;
+}
+```
+
+**Benefits:**
+- **Collision-safe** across multiple service instances
+- **Human-readable** for documents and customer support
+- **Country-aware** for TIR compliance and regional operations
+- **Date-sortable** for chronological ordering and reporting
+- **Distributed-safe** for auto-scaling environments
+
+### Database Schema Requirements
+**Primary Storage: DynamoDB** - Optimized single-table design for cost efficiency and performance.
+
+**Single-Table DynamoDB Design:**
+- **`tir-auth-main`** - Primary table containing all business data:
+  - User profiles (all types: Provider, Driver, Internal)
+  - Role assignments and permissions
+  - Company information (Provider companies, Shipping companies)
+  - Driver employment relationships
+  - Role and permission definitions
+
+**Key Benefits:**
+- **90% cost reduction** compared to multi-table approach
+- **Single-query access** patterns for related data
+- **Efficient GSI usage** for essential lookups (Cognito sub)
+- **Country-based filtering** for TIR compliance
+
+**Detailed Schema:** See [dynamodb-schema.md](./dynamodb-schema.md) for complete table structure, data patterns, and query examples.
+
+**Integration with AWS Cognito:**
+- Cognito handles: Authentication, JWT tokens, password management, email verification
+- DynamoDB stores: Business profiles, roles, permissions, company relationships
+- Audit logs: Structured logging to files (not stored in DynamoDB)
 
 
 ### API Requirements
@@ -268,7 +332,6 @@ docker-compose up
 - [ ] Login/logout functionality with JWT tokens
 - [ ] Password management (hashing, validation, reset)
 - [ ] Email verification system
-
 - [ ] Basic user profile management
 
 ### Phase 2: RBAC System (Week 2-3)
