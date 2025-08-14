@@ -1120,4 +1120,84 @@ router.get('/admin/roles', verifyUserAuth, requirePermission('manage:roles'), (r
     res.status(200).json({ success: true, data: ROLES, correlationId: req.correlationId, timestamp: new Date().toISOString() });
 });
 
+
+
+/**
+ * @swagger
+ * /api/profile/language:
+ *   put:
+ *     summary: Update user's language preference
+ *     description: Update the language preference for email notifications
+ *     tags: [Profile]
+ *     security:
+ *       - BearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - language
+ *             properties:
+ *               language:
+ *                 type: string
+ *                 enum: [en, tr, az]
+ *                 example: tr
+ *     responses:
+ *       200:
+ *         description: Language preference updated
+ *       400:
+ *         description: Invalid language
+ *       404:
+ *         description: Profile not found
+ */
+router.put('/profile/language', verifyUserAuth, async (req, res) => {
+    try {
+        const { language } = req.body;
+        
+        // Validate language
+        const validLanguages = ['en', 'tr', 'az'];
+        if (!validLanguages.includes(language)) {
+            return res.status(400).json({ 
+                error: `Invalid language. Must be one of: ${validLanguages.join(', ')}`, 
+                correlationId: req.correlationId, 
+                timestamp: new Date().toISOString() 
+            });
+        }
+
+        const profileService = require('../services/profile');
+        const updated = await profileService.updateLanguagePreference(req.user.id, language);
+
+        logBusinessEvent('LANGUAGE_PREFERENCE_UPDATED', 'User language preference updated', {
+            userId: req.user.id,
+            language
+        });
+
+        res.status(200).json({ 
+            success: true, 
+            data: updated, 
+            correlationId: req.correlationId, 
+            timestamp: new Date().toISOString() 
+        });
+
+    } catch (error) {
+        logger.error('Language preference update failed', error, { userId: req.user.id });
+        
+        if (error.message === 'Profile not found') {
+            return res.status(404).json({ 
+                error: 'Profile not found', 
+                correlationId: req.correlationId, 
+                timestamp: new Date().toISOString() 
+            });
+        }
+        
+        res.status(500).json({ 
+            error: error.message, 
+            correlationId: req.correlationId, 
+            timestamp: new Date().toISOString() 
+        });
+    }
+});
+
 module.exports = router;

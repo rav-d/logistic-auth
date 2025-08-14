@@ -6,8 +6,12 @@ const {
   ConfirmSignUpCommand,
   ResendConfirmationCodeCommand,
   ForgotPasswordCommand,
-  ConfirmForgotPasswordCommand
+  ConfirmForgotPasswordCommand,
+  AdminGetUserCommand,
+  ListUsersCommand
 } = require('@aws-sdk/client-cognito-identity-provider');
+
+const { SNSClient, PublishCommand } = require('@aws-sdk/client-sns');
 
 // Local Cognito configuration from environment variables
 const cognitoConfig = {
@@ -17,6 +21,7 @@ const cognitoConfig = {
 };
 
 const client = new CognitoIdentityProviderClient({ region: cognitoConfig.region });
+const snsClient = new SNSClient({ region: cognitoConfig.region });
 
 module.exports = {
     async registerUser({ userType, email, password, phoneNumber, profile, givenName, familyName, given_name, family_name }) {
@@ -68,6 +73,34 @@ module.exports = {
             if ((process.env.PROFILE_CREATE_STRICT || 'false') === 'true') {
                 throw err;
             }
+        }
+
+        // Send welcome email (soft-fail)
+        try {
+            const emailService = require('./email').getEmailService();
+            const userProfile = await require('./profile').getProfile(email);
+            const language = userProfile?.profile?.language || 'en';
+            
+            await emailService.sendAuthEmail({
+                to: email,
+                templateType: 'welcome',
+                templateData: {
+                    firstName: resolvedGivenName || 'User',
+                    email: email,
+                    userType: userType,
+                    company: profile?.company,
+                    verificationUrl: `${process.env.FRONTEND_URL || 'https://tirbrowser.com'}/verify?email=${encodeURIComponent(email)}`,
+                    expiryHours: 24
+                },
+                language: language
+            });
+        } catch (emailError) {
+            const logger = require('./logger')('auth:cognito-service');
+            logger.warn('Welcome email sending failed', {
+                error: emailError?.message,
+                email: email,
+                category: 'email_notification'
+            });
         }
         return {
             userId: email,
@@ -128,6 +161,33 @@ module.exports = {
             Username: email
         };
         const response = await client.send(new ResendConfirmationCodeCommand(params));
+
+        // Send verification email (soft-fail)
+        try {
+            const emailService = require('./email').getEmailService();
+            const userProfile = await require('./profile').getProfile(email);
+            const language = userProfile?.profile?.language || 'en';
+            
+            await emailService.sendAuthEmail({
+                to: email,
+                templateType: 'verification',
+                templateData: {
+                    firstName: userProfile?.profile?.firstName || userProfile?.profile?.givenName || 'User',
+                    verificationUrl: `${process.env.FRONTEND_URL || 'https://tirbrowser.com'}/verify?email=${encodeURIComponent(email)}`,
+                    verificationCode: response?.CodeDeliveryDetails?.Destination || 'Check your email',
+                    expiryHours: 24
+                },
+                language: language
+            });
+        } catch (emailError) {
+            const logger = require('./logger')('auth:cognito-service');
+            logger.warn('Verification email sending failed', {
+                error: emailError?.message,
+                email: email,
+                category: 'email_notification'
+            });
+        }
+
         return {
             codeDelivery: response?.CodeDeliveryDetails || null
         };
@@ -139,6 +199,32 @@ module.exports = {
             Username: email
         };
         await client.send(new ForgotPasswordCommand(params));
+
+        // Send password reset email (soft-fail)
+        try {
+            const emailService = require('./email').getEmailService();
+            const userProfile = await require('./profile').getProfile(email);
+            const language = userProfile?.profile?.language || 'en';
+            
+            await emailService.sendAuthEmail({
+                to: email,
+                templateType: 'password-reset',
+                templateData: {
+                    firstName: userProfile?.profile?.firstName || userProfile?.profile?.givenName || 'User',
+                    resetUrl: `${process.env.FRONTEND_URL || 'https://tirbrowser.com'}/reset-password?email=${encodeURIComponent(email)}`,
+                    expiryHours: 24
+                },
+                language: language
+            });
+        } catch (emailError) {
+            const logger = require('./logger')('auth:cognito-service');
+            logger.warn('Password reset email sending failed', {
+                error: emailError?.message,
+                email: email,
+                category: 'email_notification'
+            });
+        }
+        
         return true;
     },
 
@@ -150,6 +236,168 @@ module.exports = {
             Password: newPassword
         };
         await client.send(new ConfirmForgotPasswordCommand(params));
+
+        // Send password changed confirmation email (soft-fail)
+        try {
+            const emailService = require('./email').getEmailService();
+            const userProfile = await require('./profile').getProfile(email);
+            const language = userProfile?.profile?.language || 'en';
+            
+            await emailService.sendAuthEmail({
+                to: email,
+                templateType: 'password-changed',
+                templateData: {
+                    firstName: userProfile?.profile?.firstName || userProfile?.profile?.givenName || 'User'
+                },
+                language: language
+            });
+        } catch (emailError) {
+            const logger = require('./logger')('auth:cognito-service');
+            logger.warn('Password changed email sending failed', {
+                error: emailError?.message,
+                email: email,
+                category: 'email_notification'
+            });
+        }
+
         return true;
+    },
+
+    async sendOTP({ phoneNumber }) {
+        let username;
+
+        // Normalize phone number format (remove + if present, ensure E.164 format)
+        const normalizedPhoneNumber = phoneNumber.startsWith('+') ? phoneNumber : `+${phoneNumber}`;
+        
+        // Step 1: Check if user exists with this phone number
+        // We need to list users and filter by phone number since Cognito doesn't support direct lookup by phone number
+        const listUsersParams = {
+            UserPoolId: cognitoConfig.userPoolId,
+            Filter: `phone_number = "${normalizedPhoneNumber}"`
+        };
+
+        // Add some debugging
+        const logger = require('./logger')('auth:cognito-service');
+        logger.info('Searching for user by phone number', {
+            originalPhoneNumber: phoneNumber,
+            normalizedPhoneNumber: normalizedPhoneNumber,
+            filter: listUsersParams.Filter,
+            category: 'sms_notification'
+        });
+
+        try {
+            // Use ListUsers to find user by phone number
+            const listResponse = await client.send(new ListUsersCommand(listUsersParams));
+            
+            logger.info('ListUsers response', {
+                userCount: listResponse.Users?.length || 0,
+                category: 'sms_notification'
+            });
+            
+            if (!listResponse.Users || listResponse.Users.length === 0) {
+                // User not found, return appropriate error
+                logger.warn('OTP request for non-existent user', {
+                    phoneNumber: phoneNumber,
+                    category: 'sms_notification'
+                });
+                
+                const error = new Error('User not found with this phone number');
+                error.name = 'UserNotFoundException';
+                error.statusCode = 404;
+                throw error;
+            }
+
+            // Get the first user found (should be unique)
+            const user = listResponse.Users[0];
+            username = user.Username;
+            
+            logger.info('Found user for OTP', {
+                username: username,
+                phoneNumber: normalizedPhoneNumber,
+                category: 'sms_notification'
+            });
+        } catch (error) {
+            logger.error('Error searching for user by phone number', {
+                error: error?.message,
+                phoneNumber: normalizedPhoneNumber,
+                category: 'sms_notification'
+            });
+            
+            if (error.name === 'UserNotFoundException') {
+                error.statusCode = 404;
+                error.message = 'User not found with this phone number';
+                throw error;
+            }
+            throw error;
+        }
+
+        // Step 2: User exists, now send OTP via SMS
+        try {
+            // Generate 6-digit OTP
+            const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+            
+            // Prepare SMS message
+            const message = `Your TIR Browser verification code is: ${otpCode}. Valid for 10 minutes.`;
+            
+            // Send SMS via AWS SNS
+            const snsParams = {
+                Message: message,
+                PhoneNumber: normalizedPhoneNumber,
+                MessageAttributes: {
+                    'AWS.SNS.SMS.SMSType': {
+                        DataType: 'String',
+                        StringValue: 'Transactional'
+                    },
+                    'AWS.SNS.SMS.SenderID': {
+                        DataType: 'String',
+                        StringValue: 'TIRBrowser'
+                    }
+                }
+            };
+            
+            const snsResponse = await snsClient.send(new PublishCommand(snsParams));
+            
+            logger.info('SMS OTP sent successfully', {
+                phoneNumber: normalizedPhoneNumber,
+                username: username,
+                messageId: snsResponse.MessageId,
+                category: 'sms_notification'
+            });
+
+            return {
+                success: true,
+                message: 'OTP sent successfully',
+                messageId: snsResponse.MessageId,
+                session: `session_${Date.now()}`,
+                challengeName: 'SMS_MFA'
+            };
+        } catch (error) {
+            logger.error('SMS OTP sending failed', {
+                error: error?.message,
+                phoneNumber: normalizedPhoneNumber,
+                username: username,
+                category: 'sms_notification'
+            });
+            
+            // Map SNS errors to appropriate HTTP status codes
+            if (error.name === 'InvalidParameterException') {
+                error.statusCode = 400;
+                error.message = 'Invalid phone number format';
+            } else if (error.name === 'ThrottlingException') {
+                error.statusCode = 429;
+                error.message = 'Too many SMS requests. Please try again later.';
+            } else if (error.name === 'AuthorizationErrorException') {
+                error.statusCode = 403;
+                error.message = 'SMS sending not authorized';
+            } else if (error.name === 'OptOutException') {
+                error.statusCode = 400;
+                error.message = 'Phone number has opted out of SMS';
+            } else {
+                error.statusCode = 500;
+                error.message = 'Failed to send SMS OTP';
+            }
+            
+            throw error;
+        }
     },
 };

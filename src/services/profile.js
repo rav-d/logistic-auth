@@ -11,6 +11,23 @@ const TABLE_NAME = dynamoConfig.userProfileTable;
 
 module.exports = {
     async createProfile({ userId, userType, profile }) {
+        // Set default language preference based on country if not provided
+        if (!profile.language && profile.country) {
+            const countryLanguageMap = {
+                'TR': 'tr',
+                'AZ': 'az',
+                'US': 'en',
+                'GB': 'en',
+                'CA': 'en'
+            };
+            profile.language = countryLanguageMap[profile.country] || 'en';
+        }
+        
+        // Default to English if no language is set
+        if (!profile.language) {
+            profile.language = 'en';
+        }
+
         const params = {
             TableName: TABLE_NAME,
             Item: {
@@ -50,5 +67,19 @@ module.exports = {
         };
         await client.send(new UpdateItemCommand(params));
         return { userId, profile };
+    },
+
+    async updateLanguagePreference(userId, language) {
+        const currentProfile = await this.getProfile(userId);
+        if (!currentProfile) {
+            throw new Error('Profile not found');
+        }
+
+        const updatedProfile = {
+            ...currentProfile.profile,
+            language: language
+        };
+
+        return await this.updateProfile(userId, updatedProfile);
     }
 };
