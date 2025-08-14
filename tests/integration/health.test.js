@@ -63,7 +63,7 @@ describe('Health Endpoints', () => {
             
             expect(response.body).toMatchObject({
                 service: {
-                    name: 'tir-browser-auth,
+                    name: 'tir-browser-auth',
                     version: expect.any(String),
                     environment: expect.any(String),
                     uptime: expect.any(Number),

@@ -81,10 +81,24 @@ router.get('/ready', async (req, res) => {
         category: 'readiness_check'
     });
     
-    
+    // Optional Loki health check (if LOKI_HOST configured)
+    async function checkLoki() {
+        if (!process.env.LOKI_HOST) return 'not_configured';
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 1000);
+            const response = await fetch(`${process.env.LOKI_HOST}/ready`, { signal: controller.signal });
+            clearTimeout(timeoutId);
+            return response.ok ? 'healthy' : 'unhealthy';
+        } catch (e) {
+            return 'error';
+        }
+    }
+
     const checks = {
         service: 'healthy',
         database: 'healthy', // Would check DB connection in real service
+        loki: await checkLoki(),
         dependencies: await checkServiceDependencies()
     };
     

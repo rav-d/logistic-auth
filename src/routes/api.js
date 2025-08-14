@@ -730,4 +730,394 @@ function calculateDriverPriority(driver, order) {
     return Math.round(priorityScore * 100) / 100; // Round to 2 decimal places
 }
 
+/**
+ * @swagger
+ * /api/register:
+ *   post:
+ *     summary: Register a new user (Provider/Driver/Admin)
+ *     tags: [Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - userType
+ *               - email
+ *               - password
+ *             properties:
+ *               userType:
+ *                 type: string
+ *                 enum: [provider, driver, admin]
+ *               email:
+ *                 type: string
+ *               password:
+ *                 type: string
+ *               phoneNumber:
+ *                 type: string
+ *               profile:
+ *                 type: object
+ *     responses:
+ *       201:
+ *         description: User registered successfully
+ *       400:
+ *         description: Invalid request
+ */
+router.post('/register', async (req, res) => {
+    const { userType, email, password, phoneNumber, profile, givenName, familyName, given_name, family_name } = req.body;
+    logBusinessEvent('USER_REGISTRATION_STARTED', 'User registration initiated', { email, userType });
+    try {
+        const result = await require('../services/cognito').registerUser({ userType, email, password, phoneNumber, profile, givenName, familyName, given_name, family_name });
+        logBusinessEvent('USER_REGISTERED', 'User registered', { userId: result.userId, userType });
+        res.status(201).json({ success: true, data: result, correlationId: req.correlationId, timestamp: new Date().toISOString() });
+    } catch (error) {
+        logger.error('User registration failed', error, { email, userType });
+        res.status(error.statusCode || 500).json({ error: error.message, correlationId: req.correlationId, timestamp: new Date().toISOString() });
+    }
+});
+
+/**
+ * @swagger
+ * /api/login:
+ *   post:
+ *     summary: Login user
+ *     tags: [Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *               - password
+ *             properties:
+ *               email:
+ *                 type: string
+ *               password:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Login successful
+ *       401:
+ *         description: Invalid credentials
+ */
+router.post('/login', async (req, res) => {
+    const { email, password } = req.body;
+    logBusinessEvent('USER_LOGIN_ATTEMPT', 'Login attempt', { email });
+    try {
+        const result = await require('../services/cognito').loginUser({ email, password });
+        logBusinessEvent('USER_LOGGED_IN', 'User logged in', { userId: result.userId });
+        res.status(200).json({ success: true, data: result, correlationId: req.correlationId, timestamp: new Date().toISOString() });
+    } catch (error) {
+        logger.error('Login failed', error, { email });
+        res.status(error.statusCode || 401).json({ error: error.message, correlationId: req.correlationId, timestamp: new Date().toISOString() });
+    }
+});
+
+/**
+ * @swagger
+ * /api/logout:
+ *   post:
+ *     summary: Logout user
+ *     tags: [Auth]
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Logout successful
+ */
+router.post('/logout', verifyUserAuth, async (req, res) => {
+    logBusinessEvent('USER_LOGOUT', 'User logged out', { userId: req.user.id });
+    res.status(200).json({ success: true, message: 'Logged out', correlationId: req.correlationId, timestamp: new Date().toISOString() });
+});
+
+/**
+ * @swagger
+ * /api/verify-email:
+ *   post:
+ *     summary: Verify user email
+ *     tags: [Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *               - code
+ *             properties:
+ *               email:
+ *                 type: string
+ *               code:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Email verified
+ */
+router.post('/verify-email', async (req, res) => {
+    const { email, code } = req.body;
+    try {
+        const result = await require('../services/cognito').verifyEmail({ email, code });
+        logBusinessEvent('EMAIL_VERIFIED', 'Email verified', { email });
+        res.status(200).json({ success: true, message: 'Email verified', correlationId: req.correlationId, timestamp: new Date().toISOString() });
+    } catch (error) {
+        logger.error('Email verification failed', error, { email });
+        res.status(error.statusCode || 400).json({ error: error.message, correlationId: req.correlationId, timestamp: new Date().toISOString() });
+    }
+});
+
+/**
+ * @swagger
+ * /api/resend-verification:
+ *   post:
+ *     summary: Resend verification email
+ *     tags: [Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *             properties:
+ *               email:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Verification code resent
+ */
+router.post('/resend-verification', async (req, res) => {
+    const { email } = req.body;
+    try {
+        const result = await require('../services/cognito').resendVerification({ email });
+        logBusinessEvent('VERIFICATION_RESENT', 'Verification code resent', { email });
+        res.status(200).json({ success: true, data: result, correlationId: req.correlationId, timestamp: new Date().toISOString() });
+    } catch (error) {
+        logger.error('Resend verification failed', error, { email });
+        res.status(error.statusCode || 400).json({ error: error.message, correlationId: req.correlationId, timestamp: new Date().toISOString() });
+    }
+});
+
+/**
+ * @swagger
+ * /api/forgot-password:
+ *   post:
+ *     summary: Request password reset
+ *     tags: [Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *             properties:
+ *               email:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Password reset requested
+ */
+router.post('/forgot-password', async (req, res) => {
+    const { email } = req.body;
+    try {
+        await require('../services/cognito').forgotPassword({ email });
+        logBusinessEvent('PASSWORD_RESET_REQUESTED', 'Password reset requested', { email });
+        res.status(200).json({ success: true, message: 'Password reset requested', correlationId: req.correlationId, timestamp: new Date().toISOString() });
+    } catch (error) {
+        logger.error('Password reset request failed', error, { email });
+        res.status(error.statusCode || 400).json({ error: error.message, correlationId: req.correlationId, timestamp: new Date().toISOString() });
+    }
+});
+
+/**
+ * @swagger
+ * /api/reset-password:
+ *   post:
+ *     summary: Reset password
+ *     tags: [Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *               - code
+ *               - newPassword
+ *             properties:
+ *               email:
+ *                 type: string
+ *               code:
+ *                 type: string
+ *               newPassword:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Password reset successful
+ */
+router.post('/reset-password', async (req, res) => {
+    const { email, code, newPassword } = req.body;
+    try {
+        await require('../services/cognito').resetPassword({ email, code, newPassword });
+        logBusinessEvent('PASSWORD_RESET_COMPLETED', 'Password reset completed', { email });
+        res.status(200).json({ success: true, message: 'Password reset successful', correlationId: req.correlationId, timestamp: new Date().toISOString() });
+    } catch (error) {
+        logger.error('Password reset failed', error, { email });
+        res.status(error.statusCode || 400).json({ error: error.message, correlationId: req.correlationId, timestamp: new Date().toISOString() });
+    }
+});
+
+/**
+ * @swagger
+ * /api/send-otp:
+ *   post:
+ *     summary: Send SMS OTP to user
+ *     tags: [Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - phoneNumber
+ *             properties:
+ *               phoneNumber:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: OTP sent
+ */
+router.post('/send-otp', async (req, res) => {
+    const { phoneNumber } = req.body;
+    try {
+        await require('../services/cognito').sendOTP({ phoneNumber });
+        logBusinessEvent('OTP_SENT', 'OTP sent to user', { phoneNumber });
+        res.status(200).json({ success: true, message: 'OTP sent', correlationId: req.correlationId, timestamp: new Date().toISOString() });
+    } catch (error) {
+        logger.error('OTP send failed', error, { phoneNumber });
+        res.status(error.statusCode || 400).json({ error: error.message, correlationId: req.correlationId, timestamp: new Date().toISOString() });
+    }
+});
+
+/**
+ * @swagger
+ * /api/profile:
+ *   get:
+ *     summary: Get current user's profile
+ *     tags: [Profile]
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Profile retrieved
+ */
+router.get('/profile', verifyUserAuth, async (req, res) => {
+    try {
+        const profile = await require('../services/profile').getProfile(req.user.id);
+        if (!profile) return res.status(404).json({ error: 'Profile not found', correlationId: req.correlationId, timestamp: new Date().toISOString() });
+        res.status(200).json({ success: true, data: profile, correlationId: req.correlationId, timestamp: new Date().toISOString() });
+    } catch (error) {
+        logger.error('Profile retrieval failed', error, { userId: req.user.id });
+        res.status(500).json({ error: error.message, correlationId: req.correlationId, timestamp: new Date().toISOString() });
+    }
+});
+
+/**
+ * @swagger
+ * /api/profile:
+ *   put:
+ *     summary: Update current user's profile
+ *     tags: [Profile]
+ *     security:
+ *       - BearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               profile:
+ *                 type: object
+ *     responses:
+ *       200:
+ *         description: Profile updated
+ */
+router.put('/profile', verifyUserAuth, async (req, res) => {
+    try {
+        const updated = await require('../services/profile').updateProfile(req.user.id, req.body.profile);
+        res.status(200).json({ success: true, data: updated, correlationId: req.correlationId, timestamp: new Date().toISOString() });
+    } catch (error) {
+        logger.error('Profile update failed', error, { userId: req.user.id });
+        res.status(500).json({ error: error.message, correlationId: req.correlationId, timestamp: new Date().toISOString() });
+    }
+});
+
+const { hasPermission } = require('../services/rbac');
+
+function requirePermission(permission) {
+    return (req, res, next) => {
+        if (!hasPermission(req.user, permission)) {
+            return res.status(403).json({ error: 'Forbidden', correlationId: req.correlationId, timestamp: new Date().toISOString() });
+        }
+        next();
+    };
+}
+
+/**
+ * @swagger
+ * /api/admin/users:
+ *   get:
+ *     summary: List all users (admin only)
+ *     tags: [Admin]
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Users listed
+ */
+router.get('/admin/users', verifyUserAuth, requirePermission('manage:users'), async (req, res) => {
+    try {
+        const { DynamoDBClient, ScanCommand } = require('@aws-sdk/client-dynamodb');
+        const config = require('../services/config');
+        const client = new DynamoDBClient({ region: config.dynamoRegion });
+        const result = await client.send(new ScanCommand({ TableName: config.dynamoUserProfileTable }));
+        const users = (result.Items || []).map(item => ({
+            userId: item.userId.S,
+            userType: item.userType.S,
+            profile: JSON.parse(item.profile.S),
+            createdAt: item.createdAt.S
+        }));
+        res.status(200).json({ success: true, data: users, count: users.length, correlationId: req.correlationId, timestamp: new Date().toISOString() });
+    } catch (error) {
+        logger.error('Admin user list failed', error, { userId: req.user.id });
+        res.status(500).json({ error: error.message, correlationId: req.correlationId, timestamp: new Date().toISOString() });
+    }
+});
+
+/**
+ * @swagger
+ * /api/admin/roles:
+ *   get:
+ *     summary: List all roles and permissions (admin only)
+ *     tags: [Admin]
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Roles listed
+ */
+router.get('/admin/roles', verifyUserAuth, requirePermission('manage:roles'), (req, res) => {
+    const { ROLES } = require('../services/rbac');
+    res.status(200).json({ success: true, data: ROLES, correlationId: req.correlationId, timestamp: new Date().toISOString() });
+});
+
 module.exports = router;

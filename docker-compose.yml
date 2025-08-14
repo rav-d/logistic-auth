@@ -19,6 +19,8 @@ services:
       - log-volume:/var/log/tir
       # Mount source code for development (comment out for production)
       - ./src:/app/src
+      # Ensure node_modules from image are used (prevents local host override)
+      - /app/node_modules
     networks:
       - tir-network
     depends_on:
