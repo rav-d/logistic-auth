@@ -7,8 +7,7 @@ const {
   ResendConfirmationCodeCommand,
   ForgotPasswordCommand,
   ConfirmForgotPasswordCommand,
-  AdminGetUserCommand,
-  ListUsersCommand
+  ListUsersCommand,
 } = require('@aws-sdk/client-cognito-identity-provider');
 
 const { SNSClient, PublishCommand } = require('@aws-sdk/client-sns');
@@ -24,24 +23,59 @@ const client = new CognitoIdentityProviderClient({ region: cognitoConfig.region 
 const snsClient = new SNSClient({ region: cognitoConfig.region });
 
 module.exports = {
-    async registerUser({ userType, email, password, phoneNumber, profile, givenName, familyName, given_name, family_name }) {
-        // Sign up user in Cognito
-        const includeUserType = (process.env.COGNITO_INCLUDE_CUSTOM_USER_TYPE || 'false') === 'true';
-        const userTypeAttrName = process.env.COGNITO_CUSTOM_USER_TYPE_ATTR || 'custom:userType';
+    async registerUser({ userType, email, password, phoneNumber, profile, givenName, familyName, given_name, family_name, country }) {
+        const logger = require('./logger')('auth:cognito-service');
+        
+        // Validate required fields
+        if (!userType || !email || !password || !country) {
+            const error = new Error('Missing required fields: userType, email, password, country');
+            error.statusCode = 400;
+            throw error;
+        }
+
+        // Validate country format (2-letter ISO code)
+        if (!/^[A-Z]{2}$/.test(country)) {
+            const error = new Error('Country must be a 2-letter ISO code (e.g., TR, AZ, US)');
+            error.statusCode = 400;
+            throw error;
+        }
 
         // Derive optional name attributes if provided
         const resolvedGivenName = givenName || given_name || profile?.givenName || profile?.firstName || profile?.given_name || (profile?.fullName ? String(profile.fullName).split(' ')[0] : undefined);
-        const resolvedFamilyName = familyName || family_name || profile?.familyName || profile?.lastName || profile?.family_name || (profile?.fullName ? String(profile.fullName).split(' ').slice(1).join(' ') : undefined);
+        const resolvedFamilyName = familyName || family_name || profile?.familyName || profile?.lastName || profile?.family_name || (profile?.fullName ? String(profile.fullName).slice(1).join(' ') : undefined);
 
         const userAttributes = [
             { Name: 'email', Value: email },
+            { Name: 'custom:userType', Value: userType.toUpperCase() },
+            { Name: 'custom:country', Value: country },
             ...(phoneNumber ? [{ Name: 'phone_number', Value: phoneNumber }] : []),
             ...(resolvedGivenName ? [{ Name: 'given_name', Value: String(resolvedGivenName) }] : []),
             ...(resolvedFamilyName ? [{ Name: 'family_name', Value: String(resolvedFamilyName) }] : []),
         ];
 
-        if (includeUserType && userType) {
-            userAttributes.push({ Name: userTypeAttrName, Value: String(userType) });
+        // Add additional custom attributes based on user type
+        if (userType === 'DRIVER') {
+            if (profile?.licenseNumber) {
+                userAttributes.push({ Name: 'custom:licenseNumber', Value: profile.licenseNumber });
+            }
+            if (profile?.companyId) {
+                userAttributes.push({ Name: 'custom:companyId', Value: profile.companyId });
+            }
+        } else if (userType === 'PROVIDER') {
+            if (profile?.companyId) {
+                userAttributes.push({ Name: 'custom:companyId', Value: profile.companyId });
+            }
+            userAttributes.push({ Name: 'custom:businessVerification', Value: 'PENDING' });
+        } else if (userType === 'INTERNAL') {
+            if (profile?.department) {
+                userAttributes.push({ Name: 'custom:department', Value: profile.department });
+            }
+            if (profile?.employeeId) {
+                userAttributes.push({ Name: 'custom:employeeId', Value: profile.employeeId });
+            }
+            if (profile?.accessLevel) {
+                userAttributes.push({ Name: 'custom:accessLevel', Value: profile.accessLevel });
+            }
         }
 
         const params = {
@@ -50,36 +84,96 @@ module.exports = {
             Password: password,
             UserAttributes: userAttributes
         };
+
         let signUpResponse;
         try {
             signUpResponse = await client.send(new SignUpCommand(params));
+            
+            // Record successful registration metrics
+            const metricsService = require('./metrics');
+            metricsService.recordUserRegistration(userType.toUpperCase(), 'success', country);
+            metricsService.recordCognitoOperation('SIGN_UP', 'success', userType.toUpperCase());
+            
+            logger.info('User registered successfully in Cognito', {
+                email,
+                userType,
+                country,
+                cognitoSub: signUpResponse.UserSub,
+                category: 'user_registration'
+            });
+
         } catch (error) {
+            // Record failed registration metrics
+            const metricsService = require('./metrics');
+            metricsService.recordUserRegistration(userType.toUpperCase(), 'failure', country);
+            metricsService.recordCognitoOperation('SIGN_UP', 'failure', userType.toUpperCase());
+            
             // Map Cognito schema validation errors to 400 Bad Request
             if (typeof error?.message === 'string' && /Attributes did not conform to the schema|required/i.test(error.message)) {
                 error.statusCode = 400;
             }
+            
+            logger.error('User registration failed in Cognito', error, {
+                email,
+                userType,
+                country,
+                category: 'user_registration'
+            });
+            
             throw error;
         }
-        // Create profile record in DynamoDB (soft-fail unless PROFILE_CREATE_STRICT=true)
+
+        // Create profile record in DynamoDB
         try {
-            await require('./profile').createProfile({ userId: email, userType, profile });
-        } catch (err) {
-            const logger = require('./logger')('auth:cognito-service');
-            logger.warn('Profile creation failed', {
-                error: err?.message,
-                code: err?.code || err?.name,
-                category: 'profile_persistence'
+            const dynamoDBService = require('./dynamodb');
+            const profileResult = await dynamoDBService.createUserProfile({
+                cognitoSub: signUpResponse.UserSub,
+                userType: userType.toUpperCase(),
+                email,
+                country,
+                profile: {
+                    fullName: resolvedGivenName && resolvedFamilyName ? `${resolvedGivenName} ${resolvedFamilyName}` : undefined,
+                    givenName: resolvedGivenName,
+                    familyName: resolvedFamilyName,
+                    phoneNumber,
+                    licenseNumber: profile?.licenseNumber,
+                    companyId: profile?.companyId,
+                    department: profile?.department,
+                    employeeId: profile?.employeeId,
+                    accessLevel: profile?.accessLevel
+                }
             });
-            if ((process.env.PROFILE_CREATE_STRICT || 'false') === 'true') {
-                throw err;
-            }
+
+            logger.info('User profile created in DynamoDB', {
+                userId: profileResult.userId,
+                cognitoSub: signUpResponse.UserSub,
+                userType,
+                country,
+                category: 'profile_creation'
+            });
+
+        } catch (err) {
+            logger.error('Profile creation failed in DynamoDB', err, {
+                email,
+                userType,
+                country,
+                cognitoSub: signUpResponse.UserSub,
+                category: 'profile_creation'
+            });
+            
+            return {
+                userId: signUpResponse.UserSub,
+                userType: userType.toUpperCase(),
+                country,
+                codeDelivery: signUpResponse?.CodeDeliveryDetails,
+                status: 'PENDING_VERIFICATION'
+            };
         }
 
         // Send welcome email (soft-fail)
         try {
             const emailService = require('./email').getEmailService();
-            const userProfile = await require('./profile').getProfile(email);
-            const language = userProfile?.profile?.language || 'en';
+            const language = profile?.language || this.getLanguageFromCountry(country);
             
             await emailService.sendAuthEmail({
                 to: email,
@@ -94,22 +188,34 @@ module.exports = {
                 },
                 language: language
             });
+
+            // Record email notification metrics
+            const metricsService = require('./metrics');
+            metricsService.recordEmailNotification('welcome', 'success', language);
+
         } catch (emailError) {
-            const logger = require('./logger')('auth:cognito-service');
             logger.warn('Welcome email sending failed', {
                 error: emailError?.message,
                 email: email,
                 category: 'email_notification'
             });
+            
+            // Record failed email metrics
+            const metricsService = require('./metrics');
+            metricsService.recordEmailNotification('welcome', 'failure', 'en');
         }
+
         return {
-            userId: email,
-            userType,
-            codeDelivery: signUpResponse?.CodeDeliveryDetails
+            userId: signUpResponse.UserSub,
+            userType: userType.toUpperCase(),
+            country,
+            codeDelivery: signUpResponse?.CodeDeliveryDetails,
+            status: 'PENDING_VERIFICATION'
         };
     },
 
     async loginUser({ email, password }) {
+        const logger = require('./logger')('auth:cognito-service');
         const useAdmin = (process.env.COGNITO_USE_ADMIN_AUTH || 'false') === 'true';
         const clientSecret = process.env.COGNITO_CLIENT_SECRET;
         
@@ -124,160 +230,339 @@ module.exports = {
             authParameters.SECRET_HASH = secretHash;
         }
 
-        if (useAdmin) {
-            const params = {
-                UserPoolId: cognitoConfig.userPoolId,
-                ClientId: cognitoConfig.clientId,
-                AuthFlow: 'ADMIN_NO_SRP_AUTH',
-                AuthParameters: authParameters
+        try {
+            let response;
+            if (useAdmin) {
+                const params = {
+                    UserPoolId: cognitoConfig.userPoolId,
+                    ClientId: cognitoConfig.clientId,
+                    AuthFlow: 'ADMIN_NO_SRP_AUTH',
+                    AuthParameters: authParameters
+                };
+                response = await client.send(new AdminInitiateAuthCommand(params));
+            } else {
+                const params = {
+                    AuthFlow: 'USER_PASSWORD_AUTH',
+                    ClientId: cognitoConfig.clientId,
+                    AuthParameters: authParameters
+                };
+                response = await client.send(new InitiateAuthCommand(params));
+            }
+
+            // Get user profile to record metrics
+            let userType = 'unknown';
+            let country = 'unknown';
+            try {
+                const dynamoDBService = require('./dynamodb');
+                const userProfile = await dynamoDBService.getUserProfileByCognitoSub(email);
+                if (userProfile) {
+                    userType = userProfile.userType;
+                    country = userProfile.country;
+                }
+            } catch (profileError) {
+                logger.warn('Failed to get user profile for metrics', {
+                    error: profileError?.message,
+                    email,
+                    category: 'metrics_collection'
+                });
+            }
+
+            // Record successful login metrics
+            const metricsService = require('./metrics');
+            metricsService.recordLoginAttempt(userType, 'success', country);
+            metricsService.recordAuthenticationAttempt('login', 'success', userType);
+            metricsService.recordCognitoOperation('LOGIN', 'success', userType);
+
+            logger.info('User login successful', {
+                email,
+                userType,
+                country,
+                category: 'user_authentication'
+            });
+
+            return { 
+                userId: email, 
+                token: response.AuthenticationResult?.IdToken,
+                userType,
+                country
             };
-            const response = await client.send(new AdminInitiateAuthCommand(params));
-            return { userId: email, token: response.AuthenticationResult?.IdToken };
-        } else {
-            const params = {
-                AuthFlow: 'USER_PASSWORD_AUTH',
-                ClientId: cognitoConfig.clientId,
-                AuthParameters: authParameters
-            };
-            const response = await client.send(new InitiateAuthCommand(params));
-            return { userId: email, token: response.AuthenticationResult?.IdToken };
+
+        } catch (error) {
+            // Get user profile to record metrics
+            let userType = 'unknown';
+            let country = 'unknown';
+            try {
+                const dynamoDBService = require('./dynamodb');
+                const userProfile = await dynamoDBService.getUserProfileByCognitoSub(email);
+                if (userProfile) {
+                    userType = userProfile.userType;
+                    country = userProfile.country;
+                }
+            } catch (profileError) {
+                
+            }
+
+            // Record failed login metrics
+            const metricsService = require('./metrics');
+            metricsService.recordLoginAttempt(userType, 'failure', country);
+            metricsService.recordAuthenticationAttempt('login', 'failure', userType);
+            metricsService.recordCognitoOperation('LOGIN', 'failure', userType);
+
+            logger.error('User login failed', error, {
+                email,
+                userType,
+                country,
+                category: 'user_authentication'
+            });
+
+            throw error;
         }
     },
 
     async verifyEmail({ email, code }) {
-        // Confirm user sign up with code
-        const params = {
-            ClientId: cognitoConfig.clientId,
-            Username: email,
-            ConfirmationCode: code
-        };
-        await client.send(new ConfirmSignUpCommand(params));
-        return true;
+        const logger = require('./logger')('auth:cognito-service');
+        
+        try {
+            // Confirm user sign up with code
+            const params = {
+                ClientId: cognitoConfig.clientId,
+                Username: email,
+                ConfirmationCode: code
+            };
+            await client.send(new ConfirmSignUpCommand(params));
+
+            // Update user status in DynamoDB
+            try {
+                const dynamoDBService = require('./dynamodb');
+                const userProfile = await dynamoDBService.getUserProfileByCognitoSub(email);
+                if (userProfile) {
+                    await dynamoDBService.updateUserProfile(userProfile.userId, {
+                        status: 'ACTIVE'
+                    });
+
+                    // Record successful verification metrics
+                    const metricsService = require('./metrics');
+                    metricsService.recordBusinessEvent('EMAIL_VERIFIED', 'success', userProfile.userType);
+                    metricsService.recordCognitoOperation('EMAIL_VERIFICATION', 'success', userProfile.userType);
+
+                    logger.info('User email verified and profile activated', {
+                        email,
+                        userId: userProfile.userId,
+                        userType: userProfile.userType,
+                        category: 'email_verification'
+                    });
+                }
+            } catch (profileError) {
+                logger.warn('Failed to update user profile after email verification', {
+                    error: profileError?.message,
+                    email,
+                    category: 'profile_update'
+                });
+            }
+
+            return true;
+
+        } catch (error) {
+            // Record failed verification metrics
+            const metricsService = require('./metrics');
+            metricsService.recordBusinessEvent('EMAIL_VERIFIED', 'failure', 'unknown');
+            metricsService.recordCognitoOperation('EMAIL_VERIFICATION', 'failure', 'unknown');
+
+            logger.error('Email verification failed', error, {
+                email,
+                category: 'email_verification'
+            });
+
+            throw error;
+        }
     },
 
     async resendVerification({ email }) {
-        const params = {
-            ClientId: cognitoConfig.clientId,
-            Username: email
-        };
-        const response = await client.send(new ResendConfirmationCodeCommand(params));
-
-        // Send verification email (soft-fail)
+        const logger = require('./logger')('auth:cognito-service');
+        
         try {
-            const emailService = require('./email').getEmailService();
-            const userProfile = await require('./profile').getProfile(email);
-            const language = userProfile?.profile?.language || 'en';
-            
-            await emailService.sendAuthEmail({
-                to: email,
-                templateType: 'verification',
-                templateData: {
-                    firstName: userProfile?.profile?.firstName || userProfile?.profile?.givenName || 'User',
-                    verificationUrl: `${process.env.FRONTEND_URL || 'https://tirbrowser.com'}/verify?email=${encodeURIComponent(email)}`,
-                    verificationCode: response?.CodeDeliveryDetails?.Destination || 'Check your email',
-                    expiryHours: 24
-                },
-                language: language
-            });
-        } catch (emailError) {
-            const logger = require('./logger')('auth:cognito-service');
-            logger.warn('Verification email sending failed', {
-                error: emailError?.message,
-                email: email,
-                category: 'email_notification'
-            });
-        }
+            const params = {
+                ClientId: cognitoConfig.clientId,
+                Username: email
+            };
+            const response = await client.send(new ResendConfirmationCodeCommand(params));
 
-        return {
-            codeDelivery: response?.CodeDeliveryDetails || null
-        };
+            // Send verification email (soft-fail)
+            try {
+                const emailService = require('./email').getEmailService();
+                const dynamoDBService = require('./dynamodb');
+                const userProfile = await dynamoDBService.getUserProfileByCognitoSub(email);
+                const language = userProfile?.profile?.language || 'en';
+                
+                await emailService.sendAuthEmail({
+                    to: email,
+                    templateType: 'verification',
+                    templateData: {
+                        firstName: userProfile?.profile?.firstName || userProfile?.profile?.givenName || 'User',
+                        verificationUrl: `${process.env.FRONTEND_URL || 'https://tirbrowser.com'}/verify?email=${encodeURIComponent(email)}`,
+                        verificationCode: response?.CodeDeliveryDetails?.Destination || 'Check your email',
+                        expiryHours: 24
+                    },
+                    language: language
+                });
+
+                // Record email notification metrics
+                const metricsService = require('./metrics');
+                metricsService.recordEmailNotification('verification', 'success', language);
+
+            } catch (emailError) {
+                logger.warn('Verification email sending failed', {
+                    error: emailError?.message,
+                    email: email,
+                    category: 'email_notification'
+                });
+                
+                // Record failed email metrics
+                const metricsService = require('./metrics');
+                metricsService.recordEmailNotification('verification', 'failure', 'en');
+            }
+
+            return {
+                codeDelivery: response?.CodeDeliveryDetails || null
+            };
+
+        } catch (error) {
+            logger.error('Resend verification failed', error, {
+                email,
+                category: 'email_verification'
+            });
+
+            throw error;
+        }
     },
 
     async forgotPassword({ email }) {
-        const params = {
-            ClientId: cognitoConfig.clientId,
-            Username: email
-        };
-        await client.send(new ForgotPasswordCommand(params));
-
-        // Send password reset email (soft-fail)
-        try {
-            const emailService = require('./email').getEmailService();
-            const userProfile = await require('./profile').getProfile(email);
-            const language = userProfile?.profile?.language || 'en';
-            
-            await emailService.sendAuthEmail({
-                to: email,
-                templateType: 'password-reset',
-                templateData: {
-                    firstName: userProfile?.profile?.firstName || userProfile?.profile?.givenName || 'User',
-                    resetUrl: `${process.env.FRONTEND_URL || 'https://tirbrowser.com'}/reset-password?email=${encodeURIComponent(email)}`,
-                    expiryHours: 24
-                },
-                language: language
-            });
-        } catch (emailError) {
-            const logger = require('./logger')('auth:cognito-service');
-            logger.warn('Password reset email sending failed', {
-                error: emailError?.message,
-                email: email,
-                category: 'email_notification'
-            });
-        }
+        const logger = require('./logger')('auth:cognito-service');
         
-        return true;
+        try {
+            const params = {
+                ClientId: cognitoConfig.clientId,
+                Username: email
+            };
+            await client.send(new ForgotPasswordCommand(params));
+
+            // Send password reset email (soft-fail)
+            try {
+                const emailService = require('./email').getEmailService();
+                const dynamoDBService = require('./dynamodb');
+                const userProfile = await dynamoDBService.getUserProfileByCognitoSub(email);
+                const language = userProfile?.profile?.language || 'en';
+                
+                await emailService.sendAuthEmail({
+                    to: email,
+                    templateType: 'password-reset',
+                    templateData: {
+                        firstName: userProfile?.profile?.firstName || userProfile?.profile?.givenName || 'User',
+                        resetUrl: `${process.env.FRONTEND_URL || 'https://tirbrowser.com'}/reset-password?email=${encodeURIComponent(email)}`,
+                        expiryHours: 24
+                    },
+                    language: language
+                });
+
+                // Record email notification metrics
+                const metricsService = require('./metrics');
+                metricsService.recordPasswordReset(userProfile?.userType || 'unknown', 'success');
+                metricsService.recordEmailNotification('password-reset', 'success', language);
+
+            } catch (emailError) {
+                logger.warn('Password reset email sending failed', {
+                    error: emailError?.message,
+                    email: email,
+                    category: 'email_notification'
+                });
+                
+                // Record failed email metrics
+                const metricsService = require('./metrics');
+                metricsService.recordEmailNotification('password-reset', 'failure', 'en');
+            }
+            
+            return true;
+
+        } catch (error) {
+            logger.error('Password reset request failed', error, {
+                email,
+                category: 'password_reset'
+            });
+
+            throw error;
+        }
     },
 
     async resetPassword({ email, code, newPassword }) {
-        const params = {
-            ClientId: cognitoConfig.clientId,
-            Username: email,
-            ConfirmationCode: code,
-            Password: newPassword
-        };
-        await client.send(new ConfirmForgotPasswordCommand(params));
-
-        // Send password changed confirmation email (soft-fail)
+        const logger = require('./logger')('auth:cognito-service');
+        
         try {
-            const emailService = require('./email').getEmailService();
-            const userProfile = await require('./profile').getProfile(email);
-            const language = userProfile?.profile?.language || 'en';
-            
-            await emailService.sendAuthEmail({
-                to: email,
-                templateType: 'password-changed',
-                templateData: {
-                    firstName: userProfile?.profile?.firstName || userProfile?.profile?.givenName || 'User'
-                },
-                language: language
-            });
-        } catch (emailError) {
-            const logger = require('./logger')('auth:cognito-service');
-            logger.warn('Password changed email sending failed', {
-                error: emailError?.message,
-                email: email,
-                category: 'email_notification'
-            });
-        }
+            const params = {
+                ClientId: cognitoConfig.clientId,
+                Username: email,
+                ConfirmationCode: code,
+                Password: newPassword
+            };
+            await client.send(new ConfirmForgotPasswordCommand(params));
 
-        return true;
+            // Send password changed confirmation email (soft-fail)
+            try {
+                const emailService = require('./email').getEmailService();
+                const dynamoDBService = require('./dynamodb');
+                const userProfile = await dynamoDBService.getUserProfileByCognitoSub(email);
+                const language = userProfile?.profile?.language || 'en';
+                
+                await emailService.sendAuthEmail({
+                    to: email,
+                    templateType: 'password-changed',
+                    templateData: {
+                        firstName: userProfile?.profile?.firstName || userProfile?.profile?.givenName || 'User'
+                    },
+                    language: language
+                });
+
+                // Record email notification metrics
+                const metricsService = require('./metrics');
+                metricsService.recordPasswordReset(userProfile?.userType || 'unknown', 'success');
+                metricsService.recordEmailNotification('password-changed', 'success', language);
+
+            } catch (emailError) {
+                logger.warn('Password changed email sending failed', {
+                    error: emailError?.message,
+                    email: email,
+                    category: 'email_notification'
+                });
+                
+                // Record failed email metrics
+                const metricsService = require('./metrics');
+                metricsService.recordEmailNotification('password-changed', 'failure', 'en');
+            }
+
+            return true;
+
+        } catch (error) {
+            logger.error('Password reset failed', error, {
+                email,
+                category: 'password_reset'
+            });
+
+            throw error;
+        }
     },
 
     async sendOTP({ phoneNumber }) {
+        const logger = require('./logger')('auth:cognito-service');
         let username;
 
         // Normalize phone number format (remove + if present, ensure E.164 format)
         const normalizedPhoneNumber = phoneNumber.startsWith('+') ? phoneNumber : `+${phoneNumber}`;
         
         // Step 1: Check if user exists with this phone number
-        // We need to list users and filter by phone number since Cognito doesn't support direct lookup by phone number
         const listUsersParams = {
             UserPoolId: cognitoConfig.userPoolId,
             Filter: `phone_number = "${normalizedPhoneNumber}"`
         };
 
-        // Add some debugging
-        const logger = require('./logger')('auth:cognito-service');
         logger.info('Searching for user by phone number', {
             originalPhoneNumber: phoneNumber,
             normalizedPhoneNumber: normalizedPhoneNumber,
@@ -357,6 +642,24 @@ module.exports = {
             
             const snsResponse = await snsClient.send(new PublishCommand(snsParams));
             
+            // Get user profile for metrics
+            let userType = 'unknown';
+            let country = 'unknown';
+            try {
+                const dynamoDBService = require('./dynamodb');
+                const userProfile = await dynamoDBService.getUserProfileByCognitoSub(username);
+                if (userProfile) {
+                    userType = userProfile.userType;
+                    country = userProfile.country;
+                }
+            } catch (profileError) {
+                
+            }
+
+            // Record successful SMS metrics
+            const metricsService = require('./metrics');
+            metricsService.recordSMSNotification('otp', 'success', country);
+            
             logger.info('SMS OTP sent successfully', {
                 phoneNumber: normalizedPhoneNumber,
                 username: username,
@@ -372,6 +675,24 @@ module.exports = {
                 challengeName: 'SMS_MFA'
             };
         } catch (error) {
+            // Get user profile for metrics
+            let userType = 'unknown';
+            let country = 'unknown';
+            try {
+                const dynamoDBService = require('./dynamodb');
+                const userProfile = await dynamoDBService.getUserProfileByCognitoSub(username);
+                if (userProfile) {
+                    userType = userProfile.userType;
+                    country = userProfile.country;
+                }
+            } catch (profileError) {
+                
+            }
+
+            // Record failed SMS metrics
+            const metricsService = require('./metrics');
+            metricsService.recordSMSNotification('otp', 'failure', country);
+            
             logger.error('SMS OTP sending failed', {
                 error: error?.message,
                 phoneNumber: normalizedPhoneNumber,
@@ -400,4 +721,28 @@ module.exports = {
             throw error;
         }
     },
+
+    /**
+     * Helper function to determine language from country
+     */
+    getLanguageFromCountry(country) {
+        const countryLanguageMap = {
+            'TR': 'tr',
+            'AZ': 'az',
+            'US': 'en',
+            'GB': 'en',
+            'CA': 'en',
+            'DE': 'de',
+            'FR': 'fr',
+            'ES': 'es',
+            'IT': 'it',
+            'NL': 'nl',
+            'PL': 'pl',
+            'RU': 'ru',
+            'CN': 'zh',
+            'JP': 'ja',
+            'KR': 'ko'
+        };
+        return countryLanguageMap[country] || 'en';
+    }
 };

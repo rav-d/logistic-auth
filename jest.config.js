@@ -40,6 +40,5 @@ module.exports = {
     detectOpenHandles: true,
     
     // Jest v30 specific configurations
-    globalsCleanup: true,
     waitForUnhandledRejections: true
 };

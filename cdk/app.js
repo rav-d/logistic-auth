@@ -1,0 +1,16 @@
+#!/usr/bin/env node
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+require("source-map-support/register");
+const cdk = require("aws-cdk-lib");
+const resources_stack_1 = require("./stacks/resources-stack");
+const app = new cdk.App();
+// Create the resources stack only (DynamoDB table)
+new resources_stack_1.TirBrowserAuthResourcesStack(app, 'TirBrowserAuthResourcesStack', {
+    env: {
+        account: process.env.CDK_DEFAULT_ACCOUNT,
+        region: process.env.CDK_DEFAULT_REGION || 'eu-central-1',
+    },
+    description: 'TIR Browser Auth Resources Stack - DynamoDB Table',
+});
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJmaWxlIjoiYXBwLmpzIiwic291cmNlUm9vdCI6IiIsInNvdXJjZXMiOlsiYXBwLnRzIl0sIm5hbWVzIjpbXSwibWFwcGluZ3MiOiI7OztBQUNBLHVDQUFxQztBQUNyQyxtQ0FBbUM7QUFDbkMsOERBQXdFO0FBRXhFLE1BQU0sR0FBRyxHQUFHLElBQUksR0FBRyxDQUFDLEdBQUcsRUFBRSxDQUFDO0FBRTFCLG1EQUFtRDtBQUNuRCxJQUFJLDhDQUE0QixDQUFDLEdBQUcsRUFBRSw4QkFBOEIsRUFBRTtJQUNwRSxHQUFHLEVBQUU7UUFDSCxPQUFPLEVBQUUsT0FBTyxDQUFDLEdBQUcsQ0FBQyxtQkFBbUI7UUFDeEMsTUFBTSxFQUFFLE9BQU8sQ0FBQyxHQUFHLENBQUMsa0JBQWtCLElBQUksY0FBYztLQUN6RDtJQUNELFdBQVcsRUFBRSxtREFBbUQ7Q0FDakUsQ0FBQyxDQUFDIiwic291cmNlc0NvbnRlbnQiOlsiIyEvdXNyL2Jpbi9lbnYgbm9kZVxyXG5pbXBvcnQgJ3NvdXJjZS1tYXAtc3VwcG9ydC9yZWdpc3Rlcic7XHJcbmltcG9ydCAqIGFzIGNkayBmcm9tICdhd3MtY2RrLWxpYic7XHJcbmltcG9ydCB7IFRpckJyb3dzZXJBdXRoUmVzb3VyY2VzU3RhY2sgfSBmcm9tICcuL3N0YWNrcy9yZXNvdXJjZXMtc3RhY2snO1xyXG5cclxuY29uc3QgYXBwID0gbmV3IGNkay5BcHAoKTtcclxuXHJcbi8vIENyZWF0ZSB0aGUgcmVzb3VyY2VzIHN0YWNrIG9ubHkgKER5bmFtb0RCIHRhYmxlKVxyXG5uZXcgVGlyQnJvd3NlckF1dGhSZXNvdXJjZXNTdGFjayhhcHAsICdUaXJCcm93c2VyQXV0aFJlc291cmNlc1N0YWNrJywge1xyXG4gIGVudjoge1xyXG4gICAgYWNjb3VudDogcHJvY2Vzcy5lbnYuQ0RLX0RFRkFVTFRfQUNDT1VOVCxcclxuICAgIHJlZ2lvbjogcHJvY2Vzcy5lbnYuQ0RLX0RFRkFVTFRfUkVHSU9OIHx8ICdldS1jZW50cmFsLTEnLFxyXG4gIH0sXHJcbiAgZGVzY3JpcHRpb246ICdUSVIgQnJvd3NlciBBdXRoIFJlc291cmNlcyBTdGFjayAtIER5bmFtb0RCIFRhYmxlJyxcclxufSk7Il19

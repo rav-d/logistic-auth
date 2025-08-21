@@ -45,9 +45,6 @@ X-Service-Token: <service-jwt-token>
 - `POST /api/drivers` - Register new driver
 - `GET /api/drivers/prioritization/{orderId}` - Get driver prioritization (service-only)
 
-#### Testing
-- `POST /api/test-logging` - Test logging patterns
-
 ## Code-First Documentation
 
 ### Adding New Endpoints

@@ -4,347 +4,261 @@
 import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
-import * as ecsPatterns from 'aws-cdk-lib/aws-ecs-patterns';
-import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
-import * as logs from 'aws-cdk-lib/aws-logs';
+import * as ecs_patterns from 'aws-cdk-lib/aws-ecs-patterns';
 import * as iam from 'aws-cdk-lib/aws-iam';
-import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
-import * as fs from 'fs';
-import * as path from 'path';
+import * as logs from 'aws-cdk-lib/aws-logs';
+import * as cognito from 'aws-cdk-lib/aws-cognito';
 import { Construct } from 'constructs';
 
-export interface TirBrowserAuthStackProps extends cdk.StackProps {
-  environment: string;
-}
-
 export class TirBrowserAuthStack extends cdk.Stack {
-  public readonly service: ecs.FargateService;
-  public readonly taskDefinition: ecs.FargateTaskDefinition;
-
-  constructor(scope: Construct, id: string, props: TirBrowserAuthStackProps) {
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    const { environment } = props;
-    const isDevelopment = environment === 'development';
+    // Import the DynamoDB table from the resources stack
+    const dynamoTable = cdk.Fn.importValue('TirAuthTableName');
+    const dynamoTableArn = cdk.Fn.importValue('TirAuthTableArn');
 
-    // Read variables from .env file only
-    const envFilePath = path.join(__dirname, '../../.env');
-    const envVars: Record<string, string> = {};
-    if (fs.existsSync(envFilePath)) {
-      const envContent = fs.readFileSync(envFilePath, 'utf8');
-      envContent.split('\n').forEach(line => {
-        const trimmed = line.trim();
-        if (trimmed && !trimmed.startsWith('#')) {
-          const [key, ...valueParts] = trimmed.split('=');
-          if (key && valueParts.length > 0) {
-            envVars[key] = valueParts.join('=');
-          }
-        }
-      });
-    }
+    // VPC for the ECS service
+    const vpc = new ec2.Vpc(this, 'TirAuthVPC', {
+      maxAzs: 2,
+      natGateways: 1,
+    });
 
-    // Import VPC and cluster from shared infrastructure using CDK imports
-    const vpc = ec2.Vpc.fromVpcAttributes(this, 'ImportedVpc', {
-      vpcId: cdk.Fn.importValue('TirBrowserVpcId'),
-      availabilityZones: cdk.Fn.split(',', cdk.Fn.importValue('TirBrowserVpcAzs')),
-      privateSubnetIds: cdk.Fn.split(',', cdk.Fn.importValue('TirBrowserPrivateSubnetIds')),
-      publicSubnetIds: cdk.Fn.split(',', cdk.Fn.importValue('TirBrowserPublicSubnetIds'))
+    // Cognito User Pool
+    const userPool = new cognito.UserPool(this, 'TirAuthUserPool', {
+      userPoolName: 'tir-browser-auth-users',
+      selfSignUpEnabled: true,
+      signInAliases: {
+        email: true,
+      },
+      standardAttributes: {
+        email: {
+          required: true,
+          mutable: true,
+        },
+        givenName: {
+          required: true,
+          mutable: true,
+        },
+        familyName: {
+          required: true,
+          mutable: true,
+        },
+      },
+      customAttributes: {
+        userType: new cognito.StringAttribute({ mutable: true }),
+        country: new cognito.StringAttribute({ mutable: true }),
+        companyId: new cognito.StringAttribute({ mutable: true }),
+        driverId: new cognito.StringAttribute({ mutable: true }),
+        providerId: new cognito.StringAttribute({ mutable: true }),
+        businessVerification: new cognito.StringAttribute({ mutable: true }),
+        licenseNumber: new cognito.StringAttribute({ mutable: true }),
+        employeeId: new cognito.StringAttribute({ mutable: true }),
+        department: new cognito.StringAttribute({ mutable: true }),
+        accessLevel: new cognito.StringAttribute({ mutable: true }),
+      },
+      passwordPolicy: {
+        minLength: 8,
+        requireLowercase: true,
+        requireUppercase: true,
+        requireDigits: true,
+        requireSymbols: true,
+      },
+      email: cognito.UserPoolEmail.withCognito('noreply@tir-browser.com'),
+      userVerification: {
+        emailStyle: cognito.VerificationEmailStyle.CODE,
+      },
+      mfa: cognito.Mfa.OPTIONAL,
+      mfaSecondFactor: {
+        sms: true,
+        otp: true,
+      },
+      // Note: Advanced Security Mode is deprecated, using standard threat protection
+      accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
     });
-    
-    const cluster = ecs.Cluster.fromClusterAttributes(this, 'ImportedCluster', {
-      clusterName: isDevelopment 
-        ? cdk.Fn.importValue('TirBrowserLokiClusterName')
-        : 'tir-browser-production-cluster',
-      vpc
+
+    // Cognito User Pool Client
+    const userPoolClient = new cognito.UserPoolClient(this, 'TirAuthClient', {
+      userPool,
+      userPoolClientName: 'tir-browser-auth-client',
+      generateSecret: false,
+      authFlows: {
+        adminUserPassword: true,
+        userPassword: true,
+        userSrp: true,
+      },
+      oAuth: {
+        flows: {
+          authorizationCodeGrant: true,
+          implicitCodeGrant: true,
+        },
+        scopes: [
+          cognito.OAuthScope.EMAIL,
+          cognito.OAuthScope.OPENID,
+          cognito.OAuthScope.PROFILE,
+        ],
+        callbackUrls: ['http://localhost:3000/callback'],
+        logoutUrls: ['http://localhost:3000/logout'],
+      },
     });
-    
-    // Create security group for ECS tasks
-    const taskSecurityGroup = new ec2.SecurityGroup(this, 'AuthTaskSecurityGroup', {
+
+    // ECS Cluster
+    const cluster = new ecs.Cluster(this, 'TirAuthCluster', {
       vpc,
-      description: 'Security group for auth ECS tasks',
-      allowAllOutbound: true
-    });
-    
-    // Allow ALB to access auth tasks for health checks
-    const albSecurityGroup = ec2.SecurityGroup.fromSecurityGroupId(
-      this,
-      'ImportedAlbSecurityGroup',
-      cdk.Fn.importValue('TirBrowserDevAlbSecurityGroupId')
-    );
-    
-    taskSecurityGroup.addIngressRule(
-      albSecurityGroup,
-      ec2.Port.tcp(3000),
-      'Allow ALB to access auth for health checks'
-    );
-    
-    // VPC endpoints are shared - tasks can access existing endpoints via task security group
-    
-    // Note: VPC endpoints are shared across the VPC
-    // Main infrastructure should create all common VPC endpoints:
-    // - Secrets Manager (already in Loki stack)
-    // - S3 Gateway (already in Loki stack) 
-    // - ECR + ECR Docker (needed by all microservices)
-    // - CloudWatch Logs (needed by all microservices)
-
-    // Import shared service secret from .env or stack exports
-    const serviceSecretArn = envVars.SERVICE_SECRET_ARN || cdk.Fn.importValue('TirBrowserServiceSecretArn');
-    const serviceSecret = secretsmanager.Secret.fromSecretCompleteArn(
-      this,
-      'ServiceSecret',
-      serviceSecretArn
-    );
-
-    // Create CloudWatch log group with minimal retention (3 hours)
-    const logGroup = new logs.LogGroup(this, 'AuthLogGroup', {
-      logGroupName: `/tir-browser/${environment}/auth`,
-      retention: logs.RetentionDays.ONE_DAY,
-      removalPolicy: cdk.RemovalPolicy.DESTROY
+      clusterName: 'tir-browser-auth-cluster',
     });
 
-    // Create task definition with shared volume for logs
-    this.taskDefinition = new ecs.FargateTaskDefinition(this, 'AuthTaskDef', {
-      memoryLimitMiB: environment === 'production' ? 1024 : 512,
-      cpu: environment === 'production' ? 512 : 256,
-      family: `tir-browser-auth-${environment}`,
-      volumes: [{
-        name: 'log-volume',
-        host: {} // Empty host volume for log sharing
-      }]
+    // Task Definition
+    const taskDefinition = new ecs.FargateTaskDefinition(this, 'TirAuthTask', {
+      memoryLimitMiB: 512,
+      cpu: 256,
+      taskRole: this.createTaskRole(dynamoTableArn, userPool.userPoolArn),
+      executionRole: this.createExecutionRole(),
     });
 
-    // Add main application container
-    const serviceVersion = envVars.SERVICE_VERSION || 'latest';
-    const appContainer = this.taskDefinition.addContainer('app', {
-      image: ecs.ContainerImage.fromRegistry(
-        `${cdk.Aws.ACCOUNT_ID}.dkr.ecr.${cdk.Aws.REGION}.amazonaws.com/tir-browser-auth:${serviceVersion}`
-      ),
+    // Add container to task definition
+    const container = taskDefinition.addContainer('TirAuthContainer', {
+      image: ecs.ContainerImage.fromRegistry('tir-browser-auth:latest'),
+      containerName: 'tir-browser-auth',
       logging: ecs.LogDrivers.awsLogs({
-        streamPrefix: 'auth',
-        logGroup: logGroup
+        streamPrefix: 'tir-browser-auth',
+        logRetention: logs.RetentionDays.ONE_WEEK,
       }),
       environment: {
-        // Always set these core variables
-        SERVICE_NAME: 'auth',
-        // Pass all environment variables from .env file only, filtering out sensitive ones
-        ...Object.fromEntries(
-          Object.entries(envVars)
-            .filter(([key]) => !key.includes('SECRET') && !key.includes('PASSWORD') && !key.includes('KEY'))
-            .filter(([, value]) => value !== undefined)
-        ),
-        // Override with computed values if needed
-        NODE_ENV: envVars.NODE_ENV || environment,
-        SERVICE_VERSION: envVars.SERVICE_VERSION || serviceVersion,
-        // Add SERVICE_SECRET_ARN for auth middleware
-        SERVICE_SECRET_ARN: serviceSecretArn
+        NODE_ENV: 'production',
+        DYNAMO_TABLE_NAME: dynamoTable,
+        COGNITO_USER_POOL_ID: userPool.userPoolId,
+        COGNITO_CLIENT_ID: userPoolClient.userPoolClientId,
+        AWS_REGION: this.region,
+        LOG_LEVEL: 'info',
+        SERVICE_VERSION: '1.0.0',
       },
-      secrets: {
-        SERVICE_SECRET: ecs.Secret.fromSecretsManager(serviceSecret)
-      },
-      healthCheck: {
-        command: ['CMD-SHELL', 'node -e "require(\'http\').get(\'http://localhost:3000/ready\', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) }).on(\'error\', () => process.exit(1))"'],
-        interval: cdk.Duration.seconds(30),
-        timeout: cdk.Duration.seconds(10),
-        retries: 3,
-        startPeriod: cdk.Duration.seconds(30)
-      }
+      portMappings: [
+        {
+          containerPort: 3000,
+          protocol: ecs.Protocol.TCP,
+        },
+      ],
     });
 
-    // Add mount point to app container
-    appContainer.addMountPoints({
-      sourceVolume: 'log-volume',
-      containerPath: '/var/log/tir',
-      readOnly: false
-    });
-
-    // Add init container to fix volume permissions
-    const initContainer = this.taskDefinition.addContainer('init-permissions', {
-      image: ecs.ContainerImage.fromRegistry('alpine:latest'),
-      essential: false,
-      command: ['sh', '-c', 'chown -R 1001:1001 /var/log/tir && chmod -R 755 /var/log/tir']
-    });
-
-    // Add mount point to init container
-    initContainer.addMountPoints({
-      sourceVolume: 'log-volume',
-      containerPath: '/var/log/tir',
-      readOnly: false
-    });
-
-    // App container depends on init container
-    appContainer.addContainerDependencies({
-      container: initContainer,
-      condition: ecs.ContainerDependencyCondition.SUCCESS
-    });
-
-    // Add Promtail sidecar container with embedded config
-    const promtailConfigContent = fs.readFileSync(path.join(__dirname, '../../promtail/config.yml'), 'utf8');
-    const promtailContainer = this.taskDefinition.addContainer('promtail', {
-      image: ecs.ContainerImage.fromRegistry('grafana/promtail:3.2.0'),
-      essential: false, // Non-essential - won't stop task if it fails
-      logging: ecs.LogDrivers.awsLogs({
-        streamPrefix: 'promtail',
-        logGroup: logGroup
-      }),
-      environment: {
-        PROMTAIL_CONFIG: Buffer.from(promtailConfigContent).toString('base64')
-      },
-      entryPoint: ['sh', '-c'],
-      command: ['echo "$PROMTAIL_CONFIG" | base64 -d > /etc/promtail/config.yml && /usr/bin/promtail -config.file=/etc/promtail/config.yml'],
-      healthCheck: {
-        command: ['CMD-SHELL', 'wget -q --spider http://localhost:9080/ready || exit 1'],
-        interval: cdk.Duration.seconds(30),
-        timeout: cdk.Duration.seconds(10),
-        retries: 3,
-        startPeriod: cdk.Duration.seconds(30)
-      }
-    });
-
-    // Add mount point to Promtail container
-    promtailContainer.addMountPoints({
-      sourceVolume: 'log-volume',
-      containerPath: '/var/log/tir',
-      readOnly: true
-    });
-
-    // Add port mapping to app container
-    appContainer.addPortMappings({
-      containerPort: 3000,
-      protocol: ecs.Protocol.TCP
-    });
-
-    // Container dependency - Promtail starts after app
-    promtailContainer.addContainerDependencies({
-      container: appContainer,
-      condition: ecs.ContainerDependencyCondition.START
-    });
-
-    // Create Fargate service
-    this.service = new ecs.FargateService(this, 'AuthService', {
+    // Application Load Balancer with ECS Service
+    const loadBalancedFargateService = new ecs_patterns.ApplicationLoadBalancedFargateService(this, 'TirAuthService', {
       cluster,
-      taskDefinition: this.taskDefinition,
-      serviceName: `tir-browser-auth-${environment}`,
-      desiredCount: environment === 'production' ? 2 : 1,
-      platformVersion: ecs.FargatePlatformVersion.LATEST,
-      securityGroups: [taskSecurityGroup],
-      vpcSubnets: {
-        subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS
-      },
-      minHealthyPercent: 50,
-      maxHealthyPercent: 200
+      taskDefinition,
+      serviceName: 'tir-browser-auth-service',
+      desiredCount: 2,
+      publicLoadBalancer: true,
+      listenerPort: 80,
+
+      healthCheckGracePeriod: cdk.Duration.seconds(60),
     });
 
-    // Register with shared ALB in development or create individual ALB in production
-    if (isDevelopment) {
-      // Import shared ALB target group
-      const targetGroupArn = cdk.Fn.importValue('TirBrowserDevAuthTargetGroupArn');
-      const targetGroup = elbv2.ApplicationTargetGroup.fromTargetGroupAttributes(this, 'SharedTargetGroup', {
-        targetGroupArn,
-        loadBalancerArns: cdk.Fn.importValue('TirBrowserSharedDevAlbArn')
-      });
-      
-      // Register service with shared ALB target group
-      this.service.attachToApplicationTargetGroup(targetGroup);
-    } else {
-      // Create individual ALB for production
-      const albService = new ecsPatterns.ApplicationLoadBalancedFargateService(this, 'AuthALB', {
-        cluster,
-        taskDefinition: this.taskDefinition,
-        serviceName: `tir-browser-auth-${environment}-alb`,
-        publicLoadBalancer: true,
-        listenerPort: 80
-      });
-      
-      // Update service reference
-      this.service = albService.service;
-    }
-
-    // Configure auto scaling
-    const scalableTarget = this.service.autoScaleTaskCount({
-      minCapacity: environment === 'production' ? 2 : 1,
-      maxCapacity: environment === 'production' ? 10 : 3
+    // Auto Scaling
+    const scaling = loadBalancedFargateService.service.autoScaleTaskCount({
+      maxCapacity: 10,
+      minCapacity: 2,
     });
 
-    // Scale based on CPU utilization
-    scalableTarget.scaleOnCpuUtilization('CpuScaling', {
+    scaling.scaleOnCpuUtilization('CpuScaling', {
       targetUtilizationPercent: 70,
-      scaleInCooldown: cdk.Duration.minutes(5),
-      scaleOutCooldown: cdk.Duration.minutes(2)
+      scaleInCooldown: cdk.Duration.seconds(60),
+      scaleOutCooldown: cdk.Duration.seconds(60),
     });
 
-    // Grant permissions (following Loki pattern)
-    
-    // Grant execution role permissions for ECR and container startup
-    this.taskDefinition.executionRole?.addManagedPolicy(
-      iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AmazonECSTaskExecutionRolePolicy')
-    );
-    
-    // Grant Secrets Manager access to execution role for container secrets
-    (this.taskDefinition.executionRole as iam.Role).addToPolicy(new iam.PolicyStatement({
+    scaling.scaleOnMemoryUtilization('MemoryScaling', {
+      targetUtilizationPercent: 70,
+      scaleInCooldown: cdk.Duration.seconds(60),
+      scaleOutCooldown: cdk.Duration.seconds(60),
+    });
+
+    // Outputs
+    new cdk.CfnOutput(this, 'UserPoolId', {
+      value: userPool.userPoolId,
+      description: 'Cognito User Pool ID',
+      exportName: 'TirAuthUserPoolId',
+    });
+
+    new cdk.CfnOutput(this, 'UserPoolClientId', {
+      value: userPoolClient.userPoolClientId,
+      description: 'Cognito User Pool Client ID',
+      exportName: 'TirAuthUserPoolClientId',
+    });
+
+    new cdk.CfnOutput(this, 'ServiceURL', {
+      value: `http://${loadBalancedFargateService.loadBalancer.loadBalancerDnsName}`,
+      description: 'URL of the TIR Browser Auth Service',
+      exportName: 'TirAuthServiceURL',
+    });
+  }
+
+  private createTaskRole(tableArn: string, userPoolArn: string): iam.Role {
+    const role = new iam.Role(this, 'TirAuthTaskRole', {
+      assumedBy: new iam.ServicePrincipal('ecs-tasks.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AmazonECSTaskExecutionRolePolicy'),
+      ],
+    });
+
+    // DynamoDB permissions
+    role.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: [
-        'secretsmanager:GetSecretValue',
-        'secretsmanager:DescribeSecret'
+        'dynamodb:GetItem',
+        'dynamodb:PutItem',
+        'dynamodb:UpdateItem',
+        'dynamodb:DeleteItem',
+        'dynamodb:Query',
+        'dynamodb:Scan',
+        'dynamodb:BatchGetItem',
+        'dynamodb:BatchWriteItem',
       ],
-      resources: [serviceSecretArn]
+      resources: [tableArn, `${tableArn}/index/*`],
     }));
-    
-    // Grant task role permissions for CloudWatch Logs (3 hour retention)
-    (this.taskDefinition.taskRole as iam.Role).addToPolicy(new iam.PolicyStatement({
+
+    // Cognito permissions
+    role.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'cognito-idp:AdminGetUser',
+        'cognito-idp:AdminCreateUser',
+        'cognito-idp:AdminUpdateUserAttributes',
+        'cognito-idp:AdminDeleteUser',
+        'cognito-idp:AdminSetUserPassword',
+        'cognito-idp:AdminConfirmSignUp',
+        'cognito-idp:AdminInitiateAuth',
+        'cognito-idp:AdminRespondToAuthChallenge',
+        'cognito-idp:AdminGetDevice',
+        'cognito-idp:AdminListUsers',
+        'cognito-idp:ListUsers',
+        'cognito-idp:DescribeUserPool',
+        'cognito-idp:DescribeUserPoolClient',
+      ],
+      resources: [userPoolArn],
+    }));
+
+    return role;
+  }
+
+  private createExecutionRole(): iam.Role {
+    const role = new iam.Role(this, 'TirAuthExecutionRole', {
+      assumedBy: new iam.ServicePrincipal('ecs-tasks.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AmazonECSTaskExecutionRolePolicy'),
+      ],
+    });
+
+    // CloudWatch Logs permissions
+    role.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: [
         'logs:CreateLogGroup',
         'logs:CreateLogStream',
         'logs:PutLogEvents',
         'logs:DescribeLogStreams',
-        'logs:DescribeLogGroups'
       ],
-      resources: [`arn:aws:logs:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:log-group:/tir-browser/${environment}/auth*`]
-    }));
-    
-    // Grant Cognito permissions for user authentication
-    (this.taskDefinition.taskRole as iam.Role).addToPolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      actions: [
-        'cognito-idp:GetUser',
-        'cognito-idp:AdminGetUser',
-        'cognito-idp:ListUsers'
-      ],
-      resources: [`arn:aws:cognito-idp:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:userpool/*`]
-    }));
-    
-    // Grant task role access to secrets for runtime
-    (this.taskDefinition.taskRole as iam.Role).addToPolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      actions: [
-        'secretsmanager:GetSecretValue',
-        'secretsmanager:DescribeSecret'
-      ],
-      resources: [serviceSecretArn]
+      resources: ['*'],
     }));
 
-    // Outputs
-    if (isDevelopment) {
-      new cdk.CfnOutput(this, 'SharedALBEndpoint', {
-        value: `http://${cdk.Fn.importValue('TirBrowserSharedDevAlbDns')}/auth`,
-        description: 'auth service endpoint on shared ALB',
-      });
-      
-      new cdk.CfnOutput(this, 'HealthCheckUrl', {
-        value: `http://${cdk.Fn.importValue('TirBrowserSharedDevAlbDns')}/auth/ready`,
-        description: 'Health check URL on shared ALB'
-      });
-    }
-
-    new cdk.CfnOutput(this, 'ServiceName', {
-      value: this.service.serviceName,
-      description: 'Name of the ECS service'
-    });
-
-    // Tags
-    cdk.Tags.of(this).add('Project', 'TIR-Browser');
-    cdk.Tags.of(this).add('Environment', environment);
-    cdk.Tags.of(this).add('Service', 'auth');
-    cdk.Tags.of(this).add('ManagedBy', 'CDK');
+    return role;
   }
 }

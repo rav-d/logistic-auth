@@ -6,8 +6,8 @@
     "build": "tsc",
     "watch": "tsc -w",
     "deploy": "cdk deploy --require-approval never",
-    "deploy:dev": "NODE_ENV=development cdk deploy --require-approval never",
-    "deploy:prod": "NODE_ENV=production cdk deploy --require-approval never",
+    "deploy:dev": "cdk deploy --require-approval never",
+    "deploy:prod": "cdk deploy --require-approval never",
     "destroy": "cdk destroy --force",
     "diff": "cdk diff",
     "synth": "cdk synth"

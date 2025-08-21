@@ -1,6 +1,3 @@
-// TIR Browser Platform - auth Service
-// Reference implementation demonstrating TIR Browser development standards
-
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -17,7 +14,8 @@ const metricsService = require('./services/metrics');
 
 // Route imports
 const healthRoutes = require('./routes/health');
-const apiRoutes = require('./routes/api');
+const authRoutes = require('./routes/auth');
+const userRoutes = require('./routes/users');
 
 // Initialize Express application
 const app = express();
@@ -94,8 +92,11 @@ app.get('/api-docs.json', (req, res) => {
 // Health check routes (no authentication required)
 app.use('/', healthRoutes);
 
-// API routes (authentication required)
-app.use('/api', apiRoutes);
+// Authentication routes
+app.use('/auth', authRoutes);
+
+// User management routes (authentication required)
+app.use('/users', userRoutes);
 
 // Root endpoint
 app.get('/', (req, res) => {
@@ -107,20 +108,22 @@ app.get('/', (req, res) => {
     res.status(200).json({
         service: 'TIR Browser auth Service',
         version: process.env.SERVICE_VERSION || '1.0.0',
-        description: 'TIR Browser Platform auth service',
+        description: 'TIR Browser Platform authentication service',
         environment: process.env.NODE_ENV || 'development',
         endpoints: {
             health: '/health',
             readiness: '/ready',
             status: '/status',
-            api: '/api',
+            auth: '/auth',
+            users: '/users',
             documentation: '/api-docs'
         },
         documentation: {
             standards: 'Implements TIR Browser logging and authentication standards',
             correlationId: 'All requests include correlation ID tracking',
-            authentication: 'Service-to-service JWT authentication',
-            logging: 'Structured JSON logging with Loki integration'
+            authentication: 'AWS Cognito integration with custom user management',
+            logging: 'Structured JSON logging with Loki integration',
+            metrics: 'Comprehensive Prometheus metrics for production monitoring'
         },
         correlationId: req.correlationId,
         timestamp: new Date().toISOString()
@@ -155,7 +158,7 @@ app.use(errorLoggingMiddleware);
 
 // Validate required environment variables
 function validateEnvironment() {
-    const required = ['SERVICE_SECRET_ARN'];
+    const required = ['SERVICE_SECRET_ARN', 'DYNAMO_TABLE_NAME', 'COGNITO_USER_POOL_ID', 'COGNITO_CLIENT_ID'];
     const missing = required.filter(key => !process.env[key]);
     
     if (missing.length > 0) {
@@ -169,9 +172,37 @@ function validateEnvironment() {
     logger.info('Environment validation passed', {
         nodeEnv: process.env.NODE_ENV,
         logLevel: process.env.LOG_LEVEL,
+        dynamoTable: process.env.DYNAMO_TABLE_NAME,
+        cognitoUserPool: process.env.COGNITO_USER_POOL_ID,
         lokiHost: process.env.LOKI_HOST ? 'configured' : 'not_configured',
         category: 'application_startup'
     });
+}
+
+// Test DynamoDB connectivity on startup
+async function testDynamoDBConnection() {
+    try {
+        const dynamoDBService = require('./services/dynamodb');
+        const isHealthy = await dynamoDBService.healthCheck();
+        
+        if (isHealthy) {
+            logger.info('DynamoDB connection successful', {
+                tableName: process.env.DYNAMO_TABLE_NAME,
+                category: 'application_startup'
+            });
+        } else {
+            logger.warn('DynamoDB health check failed', {
+                tableName: process.env.DYNAMO_TABLE_NAME,
+                category: 'application_startup'
+            });
+        }
+    } catch (error) {
+        logger.warn('DynamoDB connection failed', {
+            error: error.message,
+            tableName: process.env.DYNAMO_TABLE_NAME,
+            category: 'application_startup'
+        });
+    }
 }
 
 // Test Loki connectivity on startup
@@ -254,8 +285,11 @@ async function startApplication() {
         // Validate environment
         validateEnvironment();
         
-        // Test Loki connection
-        await testLokiConnection();
+        // Test external service connections
+        await Promise.all([
+            testDynamoDBConnection(),
+            testLokiConnection()
+        ]);
         
         // Start server
         const server = app.listen(PORT, '0.0.0.0', () => {

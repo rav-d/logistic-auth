@@ -7,6 +7,12 @@ process.env.SERVICE_SECRET_ARN = 'arn:aws:secretsmanager:test:secret:test-secret
 process.env.LOG_LEVEL = 'error'; // Reduce log noise during tests
 process.env.SERVICE_VERSION = '1.0.0-test';
 
+// Add required environment variables for tests
+process.env.DYNAMO_TABLE_NAME = 'tir-auth-main-test';
+process.env.COGNITO_USER_POOL_ID = 'eu-central-1_testpool123';
+process.env.COGNITO_CLIENT_ID = 'testclient123';
+process.env.AWS_REGION = 'eu-central-1';
+
 // Suppress console output during tests (except errors)
 const originalConsole = console;
 global.console = {

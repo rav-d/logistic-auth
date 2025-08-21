@@ -1,61 +1,28 @@
 #!/usr/bin/env node
+import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
+import { TirBrowserAuthResourcesStack } from './stacks/resources-stack';
 import { TirBrowserAuthStack } from './stacks/auth-stack';
 
-/**
- * TIR Browser auth Service Infrastructure
- * Deploys auth service to development or production environment
- */
-class AuthInfrastructureApp {
-  private readonly app: cdk.App;
-  private readonly environmentConfig: EnvironmentConfig;
+const app = new cdk.App();
 
-  constructor() {
-    this.app = new cdk.App();
-    this.environmentConfig = this.validateAndGetEnvironmentConfig();
-    this.deployAuthStack();
-  }
+// Create the resources stack first (DynamoDB table)
+const resourcesStack = new TirBrowserAuthResourcesStack(app, 'TirBrowserAuthResourcesStack', {
+  env: {
+    account: process.env.CDK_DEFAULT_ACCOUNT,
+    region: process.env.CDK_DEFAULT_REGION || 'eu-central-1',
+  },
+  description: 'TIR Browser Auth Resources Stack - DynamoDB Table',
+});
 
-  private validateAndGetEnvironmentConfig(): EnvironmentConfig {
-    const requiredEnvVars = ['CDK_DEFAULT_ACCOUNT', 'CDK_DEFAULT_REGION'];
-    
-    for (const envVar of requiredEnvVars) {
-      if (!process.env[envVar]) {
-        throw new Error(`Missing required environment variable: ${envVar}`);
-      }
-    }
+// Create the simplified auth stack (Cognito only, no ECS)
+const authStack = new TirBrowserAuthStack(app, 'TirBrowserAuthStack', {
+  env: {
+    account: process.env.CDK_DEFAULT_ACCOUNT,
+    region: process.env.CDK_DEFAULT_REGION || 'eu-central-1',
+  },
+  description: 'TIR Browser Auth Stack - Cognito User Pool',
+});
 
-    return {
-      account: process.env.CDK_DEFAULT_ACCOUNT!,
-      region: process.env.CDK_DEFAULT_REGION!,
-      environment: process.env.NODE_ENV || 'development',
-    };
-  }
-
-  private deployAuthStack(): void {
-    const authStack = new TirBrowserAuthStack(
-      this.app,
-      'TirBrowserAuthStack',
-      {
-        environment: this.environmentConfig.environment,
-        env: this.environmentConfig,
-        description: 'TIR Browser auth service',
-      }
-    );
-
-    // Tags
-    cdk.Tags.of(authStack).add('Project', 'TIR-Browser');
-    cdk.Tags.of(authStack).add('Environment', this.environmentConfig.environment);
-    cdk.Tags.of(authStack).add('Service', 'auth');
-    cdk.Tags.of(authStack).add('ManagedBy', 'CDK');
-  }
-}
-
-interface EnvironmentConfig {
-  account: string;
-  region: string;
-  environment: string;
-}
-
-// Initialize and deploy auth service infrastructure
-new AuthInfrastructureApp();
+// Make auth stack depend on resources stack
+authStack.addDependency(resourcesStack);
