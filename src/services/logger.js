@@ -20,7 +20,29 @@ class TIRBrowserLogger {
         console.log(`Logger: Checking log directory: ${logDir}`);
         if (!fs.existsSync(logDir)) {
             console.log(`Logger: Creating log directory: ${logDir}`);
-            fs.mkdirSync(logDir, { recursive: true });
+            try {
+                fs.mkdirSync(logDir, { recursive: true });
+            } catch (error) {
+                console.error(`Logger: Failed to create log directory: ${logDir}`, error.message);
+                // Fallback to console only for Docker environments
+                this.winston = winston.createLogger({
+                    level: process.env.LOG_LEVEL || 'info',
+                    format: winston.format.combine(
+                        winston.format.timestamp(),
+                        winston.format.errors({ stack: true }),
+                        winston.format.json()
+                    ),
+                    defaultMeta: {
+                        service: this.service,
+                        component: this.component,
+                        environment: process.env.NODE_ENV || 'development',
+                        serviceVersion: process.env.SERVICE_VERSION || '1.0.0'
+                    },
+                    transports: [new winston.transports.Console()],
+                    exitOnError: false
+                });
+                return;
+            }
         }
         const logFile = path.join(logDir, `${service}-${this.component}.log`);
         console.log(`Logger: Log file will be: ${logFile}`);

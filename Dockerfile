@@ -23,7 +23,7 @@ RUN addgroup -g 1001 -S nodejs && adduser -S nodejs -u 1001
 WORKDIR /app
 
 # Create log directory with proper permissions
-RUN mkdir -p /var/log/tir && chown -R nodejs:nodejs /var/log/tir
+RUN mkdir -p /var/log/tir && mkdir -p /app/logs && chown -R nodejs:nodejs /var/log/tir && chown -R nodejs:nodejs /app/logs
 
 # Copy dependencies from builder stage
 COPY --from=builder /app/node_modules ./node_modules

@@ -68,6 +68,14 @@ app.use(metricsMiddleware);
 // 3. MANDATORY: API request/response logging
 app.use(apiLoggingMiddleware);
 
+// 4. Rate limiting middleware
+const rateLimitingMiddleware = require('./middleware/rate-limiting');
+app.use(rateLimitingMiddleware);
+
+// 5. Input validation middleware
+const validationMiddleware = require('./middleware/validation');
+app.use(validationMiddleware);
+
 /**
  * Routes Configuration
  */
@@ -195,6 +203,37 @@ async function testDynamoDBConnection() {
     }
 }
 
+// Test Redis connectivity on startup
+async function testRedisConnection() {
+    try {
+        const redisService = require('./services/redis');
+        await redisService.connect();
+        
+        const isHealthy = await redisService.healthCheck();
+        
+        if (isHealthy) {
+            logger.info('Redis connection successful', {
+                host: process.env.REDIS_HOST || 'localhost',
+                port: process.env.REDIS_PORT || 6379,
+                category: 'application_startup'
+            });
+        } else {
+            logger.warn('Redis health check failed', {
+                host: process.env.REDIS_HOST || 'localhost',
+                port: process.env.REDIS_PORT || 6379,
+                category: 'application_startup'
+            });
+        }
+    } catch (error) {
+        logger.warn('Redis connection failed - rate limiting will use in-memory storage', {
+            error: error.message,
+            host: process.env.REDIS_HOST || 'localhost',
+            port: process.env.REDIS_PORT || 6379,
+            category: 'application_startup'
+        });
+    }
+}
+
 // Test Loki connectivity on startup
 async function testLokiConnection() {
     if (!process.env.LOKI_HOST) {
@@ -244,11 +283,24 @@ async function testLokiConnection() {
 
 // Graceful shutdown handling
 function setupGracefulShutdown(server) {
-    const shutdown = (signal) => {
+    const shutdown = async (signal) => {
         logger.info('Shutdown signal received', {
             signal,
             category: 'application_shutdown'
         });
+        
+        // Disconnect Redis gracefully
+        try {
+            const redisService = require('./services/redis');
+            await redisService.disconnect();
+            logger.info('Redis disconnected gracefully', {
+                category: 'application_shutdown'
+            });
+        } catch (error) {
+            logger.error('Error disconnecting Redis', error, {
+                category: 'application_shutdown'
+            });
+        }
         
         server.close((err) => {
             if (err) {
@@ -278,6 +330,7 @@ async function startApplication() {
         // Test external service connections
         await Promise.all([
             testDynamoDBConnection(),
+            testRedisConnection(),
             testLokiConnection()
         ]);
         

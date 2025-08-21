@@ -1,34 +1,38 @@
-// TIR Browser Platform - Test Setup
-// Global test configuration and setup
-
-// Set test environment variables
+// Test environment setup
 process.env.NODE_ENV = 'test';
-process.env.SERVICE_SECRET_ARN = 'arn:aws:secretsmanager:test:secret:test-secret-key';
-process.env.LOG_LEVEL = 'error'; // Reduce log noise during tests
-process.env.SERVICE_VERSION = '1.0.0-test';
-
-// Add required environment variables for tests
-process.env.DYNAMO_TABLE_NAME = 'tir-auth-main-test';
-process.env.COGNITO_USER_POOL_ID = 'eu-central-1_testpool123';
-process.env.COGNITO_CLIENT_ID = 'testclient123';
+process.env.DYNAMO_TABLE_NAME = 'tir-auth-test';
 process.env.AWS_REGION = 'eu-central-1';
+process.env.SERVICE_SECRET_ARN = 'arn:aws:secretsmanager:eu-central-1:140729424382:secret:JwtSecretB8834B39-YC8ExTMWWCWg-SE89rH';
+process.env.COGNITO_USER_POOL_ID = 'eu-central-1_testpool';
+process.env.COGNITO_CLIENT_ID = 'testclientid';
+process.env.LOG_BASE_PATH = './test-logs';
 
-// Suppress console output during tests (except errors)
-const originalConsole = console;
-global.console = {
-    ...originalConsole,
-    log: jest.fn(),
-    info: jest.fn(),
-    warn: jest.fn(),
-    error: originalConsole.error, // Keep error logging for debugging
-    debug: jest.fn()
-};
+// Mock AWS services for testing
+jest.mock('@aws-sdk/client-dynamodb', () => ({
+    DynamoDBClient: jest.fn().mockImplementation(() => ({
+        send: jest.fn().mockResolvedValue({ Items: [] })
+    }))
+}));
+
+jest.mock('@aws-sdk/client-cognito-identity-provider', () => ({
+    CognitoIdentityProviderClient: jest.fn().mockImplementation(() => ({
+        send: jest.fn().mockResolvedValue({})
+    }))
+}));
+
+// Mock Redis
+jest.mock('../src/services/redis', () => ({
+    isReady: jest.fn().mockReturnValue(false),
+    connect: jest.fn().mockResolvedValue(),
+    disconnect: jest.fn().mockResolvedValue(),
+    get: jest.fn().mockResolvedValue(null),
+    set: jest.fn().mockResolvedValue(true),
+    del: jest.fn().mockResolvedValue(true),
+    incr: jest.fn().mockResolvedValue(1),
+    ttl: jest.fn().mockResolvedValue(900),
+    healthCheck: jest.fn().mockResolvedValue(false),
+    getInfo: jest.fn().mockResolvedValue(null)
+}));
 
 // Global test timeout
 jest.setTimeout(10000);
-
-// Clean up after tests
-afterAll(async () => {
-    // Allow time for async operations to complete
-    await new Promise(resolve => setTimeout(resolve, 100));
-});
