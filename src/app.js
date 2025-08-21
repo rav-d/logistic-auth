@@ -62,18 +62,8 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // 1. MANDATORY: Correlation ID middleware (must be first)
 app.use(correlationMiddleware);
 
-// 2. Metrics middleware (before path rewriting)
+// 2. Metrics middleware
 app.use(metricsMiddleware);
-
-// Development path rewriting - strip /auth prefix from shared ALB
-if (process.env.NODE_ENV === 'development') {
-  app.use((req, res, next) => {
-    if (req.path.startsWith('/auth')) {
-      req.url = req.url.replace(/^\/auth/, '') || '/';
-    }
-    next();
-  });
-}
 
 // 3. MANDATORY: API request/response logging
 app.use(apiLoggingMiddleware);

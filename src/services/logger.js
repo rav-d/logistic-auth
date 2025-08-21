@@ -16,7 +16,7 @@ class TIRBrowserLogger {
         this.component = component || 'main';
         
         // Ensure log directory exists
-        const logDir = process.env.LOG_BASE_PATH || '/var/log/tir';
+        const logDir = process.env.LOG_BASE_PATH || (process.platform === 'win32' ? './logs' : '/var/log/tir');
         console.log(`Logger: Checking log directory: ${logDir}`);
         if (!fs.existsSync(logDir)) {
             console.log(`Logger: Creating log directory: ${logDir}`);

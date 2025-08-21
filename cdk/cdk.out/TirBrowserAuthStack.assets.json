@@ -1,0 +1,36 @@
+{
+  "version": "48.0.0",
+  "files": {
+    "7fa1e366ee8a9ded01fc355f704cff92bfd179574e6f9cfee800a3541df1b200": {
+      "displayName": "TirBrowserAuthStack/Custom::VpcRestrictDefaultSGCustomResourceProvider Code",
+      "source": {
+        "path": "asset.7fa1e366ee8a9ded01fc355f704cff92bfd179574e6f9cfee800a3541df1b200",
+        "packaging": "zip"
+      },
+      "destinations": {
+        "140729424382-eu-central-1-c94a974d": {
+          "bucketName": "cdk-hnb659fds-assets-140729424382-eu-central-1",
+          "objectKey": "7fa1e366ee8a9ded01fc355f704cff92bfd179574e6f9cfee800a3541df1b200.zip",
+          "region": "eu-central-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::140729424382:role/cdk-hnb659fds-file-publishing-role-140729424382-eu-central-1"
+        }
+      }
+    },
+    "38c167cee1c209d1f0ebe01f37d7b6ea2b2c0e878832868997fa53b909a407c8": {
+      "displayName": "TirBrowserAuthStack Template",
+      "source": {
+        "path": "TirBrowserAuthStack.template.json",
+        "packaging": "file"
+      },
+      "destinations": {
+        "140729424382-eu-central-1-5e9ae65f": {
+          "bucketName": "cdk-hnb659fds-assets-140729424382-eu-central-1",
+          "objectKey": "38c167cee1c209d1f0ebe01f37d7b6ea2b2c0e878832868997fa53b909a407c8.json",
+          "region": "eu-central-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::140729424382:role/cdk-hnb659fds-file-publishing-role-140729424382-eu-central-1"
+        }
+      }
+    }
+  },
+  "dockerImages": {}
+}

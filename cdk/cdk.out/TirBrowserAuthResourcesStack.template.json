@@ -1,0 +1,139 @@
+{
+ "Description": "TIR Browser Auth Resources Stack - DynamoDB Table",
+ "Resources": {
+  "TirAuthMainTable04F4B9B2": {
+   "Type": "AWS::DynamoDB::Table",
+   "Properties": {
+    "AttributeDefinitions": [
+     {
+      "AttributeName": "PK",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "SK",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "GSI1PK",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "GSI1SK",
+      "AttributeType": "S"
+     }
+    ],
+    "BillingMode": "PAY_PER_REQUEST",
+    "GlobalSecondaryIndexes": [
+     {
+      "IndexName": "GSI1",
+      "KeySchema": [
+       {
+        "AttributeName": "GSI1PK",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "GSI1SK",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     }
+    ],
+    "KeySchema": [
+     {
+      "AttributeName": "PK",
+      "KeyType": "HASH"
+     },
+     {
+      "AttributeName": "SK",
+      "KeyType": "RANGE"
+     }
+    ],
+    "TableName": "tir-auth-main",
+    "Tags": [
+     {
+      "Key": "Service",
+      "Value": "auth"
+     }
+    ],
+    "TimeToLiveSpecification": {
+     "AttributeName": "ttl",
+     "Enabled": true
+    }
+   },
+   "UpdateReplacePolicy": "Retain",
+   "DeletionPolicy": "Retain",
+   "Metadata": {
+    "aws:cdk:path": "TirBrowserAuthResourcesStack/TirAuthMainTable/Resource"
+   }
+  },
+  "CDKMetadata": {
+   "Type": "AWS::CDK::Metadata",
+   "Properties": {
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/yXISwqAIBRA0bU011c6aAMtIKjm8fwE9tHoaRLR3oMa3cOVIEUFVYGZuDYLX52Cu4+oF4aZRnN53IJRcA+oVsuayX94WGcppEN/q01xT/FhPhgLM5WnFFCDKGZyjh/JR7dZ6P6+Hm6IOHEAAAA="
+   },
+   "Metadata": {
+    "aws:cdk:path": "TirBrowserAuthResourcesStack/CDKMetadata/Default"
+   }
+  }
+ },
+ "Outputs": {
+  "TirAuthTableName": {
+   "Description": "Name of the TIR Auth DynamoDB table",
+   "Value": {
+    "Ref": "TirAuthMainTable04F4B9B2"
+   },
+   "Export": {
+    "Name": "TirAuthTableName"
+   }
+  },
+  "TirAuthTableArn": {
+   "Description": "ARN of the TIR Auth DynamoDB table",
+   "Value": {
+    "Fn::GetAtt": [
+     "TirAuthMainTable04F4B9B2",
+     "Arn"
+    ]
+   },
+   "Export": {
+    "Name": "TirAuthTableArn"
+   }
+  }
+ },
+ "Parameters": {
+  "BootstrapVersion": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/cdk-bootstrap/hnb659fds/version",
+   "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+  }
+ },
+ "Rules": {
+  "CheckBootstrapVersion": {
+   "Assertions": [
+    {
+     "Assert": {
+      "Fn::Not": [
+       {
+        "Fn::Contains": [
+         [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+         ],
+         {
+          "Ref": "BootstrapVersion"
+         }
+        ]
+       }
+      ]
+     },
+     "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+    }
+   ]
+  }
+ }
+}

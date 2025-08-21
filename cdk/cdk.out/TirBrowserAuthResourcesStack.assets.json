@@ -1,0 +1,21 @@
+{
+  "version": "48.0.0",
+  "files": {
+    "0c73e00a17998ee98d9ab71e4945866a0dceaa852e5c1ec4d5e24c40dc70bf06": {
+      "displayName": "TirBrowserAuthResourcesStack Template",
+      "source": {
+        "path": "TirBrowserAuthResourcesStack.template.json",
+        "packaging": "file"
+      },
+      "destinations": {
+        "140729424382-eu-central-1-8c8ddb98": {
+          "bucketName": "cdk-hnb659fds-assets-140729424382-eu-central-1",
+          "objectKey": "0c73e00a17998ee98d9ab71e4945866a0dceaa852e5c1ec4d5e24c40dc70bf06.json",
+          "region": "eu-central-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::140729424382:role/cdk-hnb659fds-file-publishing-role-140729424382-eu-central-1"
+        }
+      }
+    }
+  },
+  "dockerImages": {}
+}
