@@ -32,6 +32,79 @@
 - Audit logging for business events and compliance
 - Custom user attributes (licenses, company data, internal roles)
 
+### Token Verification Architecture
+
+**Service Endpoints Token Verification:**
+All protected service endpoints verify JWT tokens through a two-layer authentication system:
+
+1. **Service-to-Service Authentication** (`verifyServiceAuth` middleware):
+   - Validates `X-Service-Token` header for internal service communication
+   - Uses AWS Secrets Manager for shared secret management
+   - JWT tokens valid for 5 minutes with service identification
+   - Required for all internal endpoints (e.g., `/api/drivers/prioritization/:orderId`)
+
+2. **User Authentication** (`verifyUserAuth` middleware):
+   - Validates `Authorization: Bearer <token>` header for user requests
+   - Communicates with AWS Cognito using JWKS (JSON Web Key Set)
+   - Verifies token signature, expiration, issuer, and audience
+   - Implements token caching for performance optimization (5-minute TTL)
+   - Extracts user claims (sub, email, cognito:groups, scope)
+
+**Token Verification Flow:**
+```
+1. Client sends request with Bearer token
+2. Middleware extracts token from Authorization header
+3. Checks token cache for recent verification
+4. If not cached, decodes token header to get key ID (kid)
+5. Fetches public key from Cognito JWKS endpoint
+6. Verifies token signature and claims
+7. Caches verified token for subsequent requests
+8. Adds user context to request object
+```
+
+**Cognito Communication:**
+- **JWKS Endpoint**: `https://cognito-idp.{region}.amazonaws.com/{userPoolId}/.well-known/jwks.json`
+- **Token Validation**: Verifies issuer, audience, expiration, and signature
+- **User Claims**: Extracts user ID, email, roles, and permissions from token
+- **Error Handling**: Returns appropriate HTTP status codes (401 for expired, 403 for invalid)
+
+### User Confirmation and Business Verification
+
+**Email Verification Flow:**
+1. **Registration**: User registers → Cognito sends verification email
+2. **Email Verification**: User clicks link/enters code → `POST /auth/verify-email`
+3. **Cognito Confirmation**: Service calls `ConfirmSignUpCommand` to Cognito
+4. **Profile Activation**: Updates user status to 'ACTIVE' in DynamoDB
+5. **Business Logic**: Triggers business verification for Provider users
+
+**Business Verification for Providers:**
+- **Initial Status**: All Provider users start with `businessVerification: 'PENDING'`
+- **Admin Review**: Internal users review business documents and company information
+- **Manual Verification**: Admin updates verification status via user management APIs
+- **Status Values**: `PENDING` → `VERIFIED` → `REJECTED` (if needed)
+
+**Admin Confirmation Process:**
+```
+1. Provider registers → Email verified → Business verification pending
+2. Admin reviews business documents and company information
+3. Admin calls user management API to update verification status
+4. System updates both Cognito custom attributes and DynamoDB profile
+5. Provider receives notification of verification status change
+```
+
+**Implementation Status:**
+✅ **Token Verification**: Fully implemented with JWKS and caching
+✅ **Email Verification**: Complete flow with Cognito integration
+✅ **Business Verification**: Schema and status tracking implemented
+✅ **Admin User Management**: CRUD operations for user management
+✅ **Service Authentication**: Service-to-service JWT verification
+
+**Pending Implementation:**
+🔧 **Business Verification UI**: Admin interface for document review
+🔧 **Verification Notifications**: Email/SMS notifications for status changes
+🔧 **Document Upload**: File storage for business verification documents
+🔧 **Automated Verification**: Integration with external verification services
+
 ---
 
 Core authentication and authorization microservice for the TIR Browser logistics platform. Handles user management for three distinct user types: Providers (goods owners), Drivers (TIR drivers), and Internal Admin users with comprehensive RBAC system.
@@ -224,6 +297,10 @@ docker-compose up
 - **Audit Logging**: Complete audit trail for all authentication and authorization events
 - **Password Security**: Bcrypt hashing, complexity requirements, breach detection
 - **Account Security**: Lockout policies, suspicious activity detection, device tracking
+- **Token Security**: JWT verification with JWKS, token caching, and proper expiration handling
+- **Service Authentication**: Secure service-to-service communication with AWS Secrets Manager
+- **Multi-Factor Authentication**: SMS OTP support for additional security
+- **Business Verification**: Manual admin review process for provider verification
 
 ### ID Generation Strategy
 **Human-readable IDs for documents and business operations:**
@@ -295,11 +372,13 @@ function generateProviderId(country) {
 - `POST /auth/forgot-password` - Password reset initiation
 - `POST /auth/reset-password` - Password reset completion
 - `POST /auth/verify-email` - Email verification
-
+- `POST /auth/resend-verification` - Resend verification email
+- `POST /auth/send-otp` - Send SMS OTP for phone verification
 
 **User Management Endpoints:**
 - `GET /users/profile` - Get current user profile
 - `PUT /users/profile` - Update user profile
+- `PUT /users/profile/language` - Update language preference
 - `GET /users/:id` - Get user details (admin)
 - `PUT /users/:id` - Update user (admin)
 - `DELETE /users/:id` - Soft delete user (admin)
@@ -313,13 +392,24 @@ function generateProviderId(country) {
 - `GET /permissions` - List all permissions
 - `GET /users/:id/permissions` - Get effective user permissions
 
+**Business Verification Endpoints (Admin Only):**
+- `PUT /users/:id` - Update user verification status (includes business verification)
+- `GET /api/admin/users` - List all users for admin review
+- `GET /api/admin/roles` - List roles and permissions for admin management
+
+**Service-to-Service Endpoints:**
+- `GET /api/drivers/prioritization/:orderId` - Driver prioritization (requires service token)
+
 ## Features
 
 - **TIR Browser Standards Compliance**: Implements mandatory logging and authentication patterns
 - **Correlation ID Tracking**: Automatic correlation ID generation and propagation
 - **Dynamic Configuration**: DynamoDB-based config with automatic refresh and fallback to environment variables
-- **Service Authentication**: JWT-based service-to-service authentication
-- **User Authentication**: AWS Cognito integration with custom user management
+- **Service Authentication**: JWT-based service-to-service authentication with AWS Secrets Manager
+- **User Authentication**: AWS Cognito integration with JWKS token verification and caching
+- **Multi-Layer Security**: Service-to-service and user authentication with proper token validation
+- **Business Verification**: Provider business verification workflow with admin approval
+- **Email & SMS Verification**: Multi-channel verification with Cognito integration
 - **Structured Logging**: Winston with Loki integration
 - **Health Checks**: Kubernetes-ready health endpoints
 - **Auto Scaling**: CPU-based scaling configuration
@@ -328,18 +418,22 @@ function generateProviderId(country) {
 ## Implementation Deliverables
 
 ### Phase 1: Core Authentication (Week 1-2)
-- [ ] User registration system for all three user types
-- [ ] Login/logout functionality with JWT tokens
-- [ ] Password management (hashing, validation, reset)
-- [ ] Email verification system
-- [ ] Basic user profile management
+- [x] User registration system for all three user types
+- [x] Login/logout functionality with JWT tokens
+- [x] Password management (hashing, validation, reset)
+- [x] Email verification system with Cognito integration
+- [x] Basic user profile management
+- [x] Token verification with JWKS and caching
+- [x] Service-to-service authentication
+- [x] SMS OTP verification support
 
 ### Phase 2: RBAC System (Week 2-3)
-- [ ] Role and permission management system
-- [ ] User-role assignment functionality
-- [ ] Permission-based route protection
-- [ ] Admin user management APIs
-- [ ] Audit logging for all auth events
+- [x] Role and permission management system
+- [x] User-role assignment functionality
+- [x] Permission-based route protection
+- [x] Admin user management APIs
+- [x] Audit logging for all auth events
+- [x] Business verification status tracking
 
 ### Phase 3: Advanced Features (Week 3-4)
 - [ ] Polymorphic user profile system
